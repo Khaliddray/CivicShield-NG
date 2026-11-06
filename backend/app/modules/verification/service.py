@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 from backend.app.core.logging import logger
 from backend.app.core.security import compute_audit_hash
 from backend.app.core.exceptions import EntityNotFoundException, ValidationException
-from backend.app.modules.verification.models import Claim, VerificationRecord
+from backend.app.modules.verification.models import Claim, VerificationRecord, VerificationRecommendation
 from backend.app.modules.verification.schemas import (
     VerificationDecisionCreate,
     QueueItemOut,
+    RecommendationCreateRequest,
+    RecommendationReviewRequest,
 )
 from backend.app.modules.reporting.models import Report, ReportStatusHistory
 from backend.app.modules.registry.models import OfficialDocument
@@ -162,3 +164,132 @@ class VerificationService:
     def get_claim(db: Session, claim_id: str) -> Optional[Claim]:
         """Fetch claim entity along with all attached verification records."""
         return db.execute(select(Claim).where(Claim.id == claim_id)).scalar_one_or_none()
+
+    @classmethod
+    def submit_recommendation(
+        cls,
+        db: Session,
+        payload: RecommendationCreateRequest,
+        analyst_user_id: str,
+    ) -> VerificationRecommendation:
+        """Submit an analyst recommendation for human reviewer approval."""
+        claim = db.execute(select(Claim).where(Claim.id == payload.claim_id)).scalar_one_or_none()
+        if not claim:
+            raise EntityNotFoundException("Claim", payload.claim_id)
+
+        if payload.official_document_id:
+            doc = db.execute(select(OfficialDocument).where(OfficialDocument.id == payload.official_document_id)).scalar_one_or_none()
+            if not doc:
+                raise EntityNotFoundException("OfficialDocument", payload.official_document_id)
+
+        rec = VerificationRecommendation(
+            claim_id=claim.id,
+            analyst_id=analyst_user_id,
+            recommended_decision=payload.recommended_decision.value,
+            justification_notes=payload.justification_notes.strip(),
+            proposed_clarification=payload.proposed_clarification.strip(),
+            official_document_id=payload.official_document_id,
+            evidence_sources_consulted=payload.evidence_sources_consulted or [],
+            status="PENDING_REVIEW",
+        )
+        db.add(rec)
+        db.flush()
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="VERIFICATION_RECOMMENDATION_SUBMITTED",
+            entity_type="CLAIM",
+            entity_id=claim.id,
+            user_id=analyst_user_id,
+            details={
+                "recommendation_id": rec.id,
+                "recommended_decision": rec.recommended_decision,
+            },
+            commit=True,
+        )
+        db.refresh(rec)
+        logger.info(f"Analyst {analyst_user_id} submitted recommendation for claim {claim.id}: {rec.recommended_decision}")
+        return rec
+
+    @classmethod
+    def review_recommendation(
+        cls,
+        db: Session,
+        recommendation_id: str,
+        payload: RecommendationReviewRequest,
+        reviewer_user_id: str,
+    ) -> VerificationRecommendation:
+        """Lead Verification Officer reviews and approves or rejects analyst recommendation."""
+        rec = db.execute(select(VerificationRecommendation).where(VerificationRecommendation.id == recommendation_id)).scalar_one_or_none()
+        if not rec:
+            raise EntityNotFoundException("VerificationRecommendation", recommendation_id)
+
+        action = payload.action.strip().upper()
+        rec.reviewer_id = reviewer_user_id
+        rec.reviewer_notes = payload.reviewer_notes.strip() if payload.reviewer_notes else None
+        rec.reviewed_at = datetime.now(timezone.utc)
+
+        if action == "APPROVE":
+            rec.status = "APPROVED"
+            # Automatically record authoritative binding decision
+            final_decision_str = payload.adjusted_decision.value if payload.adjusted_decision else rec.recommended_decision
+            final_clarification = payload.adjusted_clarification.strip() if payload.adjusted_clarification else rec.proposed_clarification
+
+            decision_payload = VerificationDecisionCreate(
+                claim_id=rec.claim_id,
+                decision=VerificationDecision(final_decision_str),
+                justification_notes=f"Approved recommendation from analyst {rec.analyst_id[:8]}... Notes: {rec.justification_notes}",
+                public_clarification=final_clarification,
+                official_document_id=rec.official_document_id,
+                evidence_sources_consulted=rec.evidence_sources_consulted or [],
+            )
+            cls.record_decision(db=db, payload=decision_payload, officer_user_id=reviewer_user_id)
+
+            SecurityAuditService.record_audit(
+                db=db,
+                action="VERIFICATION_RECOMMENDATION_APPROVED",
+                entity_type="VERIFICATION_RECOMMENDATION",
+                entity_id=rec.id,
+                user_id=reviewer_user_id,
+                details={"claim_id": rec.claim_id, "final_decision": final_decision_str},
+                commit=True,
+            )
+        elif action == "REJECT":
+            rec.status = "REJECTED"
+            SecurityAuditService.record_audit(
+                db=db,
+                action="VERIFICATION_RECOMMENDATION_REJECTED",
+                entity_type="VERIFICATION_RECOMMENDATION",
+                entity_id=rec.id,
+                user_id=reviewer_user_id,
+                details={"claim_id": rec.claim_id, "notes": payload.reviewer_notes},
+                commit=True,
+            )
+        else:
+            raise ValidationException(f"Invalid review action '{payload.action}'. Expected 'APPROVE' or 'REJECT'.")
+
+        db.commit()
+        db.refresh(rec)
+        logger.info(f"Recommendation {rec.id} {rec.status} by reviewer {reviewer_user_id}")
+        return rec
+
+    @staticmethod
+    def list_recommendations(
+        db: Session,
+        claim_id: Optional[str] = None,
+        status: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> List[VerificationRecommendation]:
+        """List analyst verification recommendations pending review or historical."""
+        query = select(VerificationRecommendation)
+        if claim_id:
+            query = query.where(VerificationRecommendation.claim_id == claim_id)
+        if status:
+            query = query.where(VerificationRecommendation.status == status.upper())
+
+        return list(
+            db.execute(
+                query.order_by(VerificationRecommendation.created_at.desc()).offset(skip).limit(limit)
+            ).scalars().all()
+        )

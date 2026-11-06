@@ -34,3 +34,26 @@ class ClaimAnalysisResponse(BaseModel):
     recommended_next_action: str
     requires_human_review: bool = True
     adversarial_injection_detected: bool = False
+
+    # Standard AI Contract fields
+    claim: Optional[str] = None
+    classification: Optional[str] = None
+    confidence: Optional[float] = None
+    evidence: List[str] = []
+    sources: List[str] = []
+    limitations: List[str] = []
+    service_available: bool = True
+    error_message: Optional[str] = None
+
+
+class StructuredAIAssessment(BaseModel):
+    """Standard contract between Member 1 Backend and Member 2 AI Service."""
+
+    claim: str
+    classification: str = "INSUFFICIENT_EVIDENCE"
+    confidence: float = 0.0
+    evidence: List[str] = []
+    sources: List[str] = []
+    limitations: List[str] = []
+    requires_human_review: bool = True
+    service_available: bool = True

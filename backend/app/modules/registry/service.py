@@ -13,11 +13,14 @@ from backend.app.core.exceptions import (
     EntityNotFoundException,
     ValidationException,
 )
-from backend.app.modules.registry.models import OfficialDocument, DocumentVersion
+from backend.app.modules.registry.models import OfficialDocument, DocumentVersion, TrustedSource
 from backend.app.modules.registry.schemas import (
     DocumentCreateRequest,
     HashVerificationRequest,
     HashVerificationResponse,
+    TrustedSourceCreateRequest,
+    TrustedSourceUpdateRequest,
+    TrustedSourceOut,
 )
 from backend.app.modules.security_audit.models import AuditLog
 from backend.app.modules.security_audit.service import SecurityAuditService
@@ -62,6 +65,7 @@ class RegistryService:
             source_url=request.source_url.strip() if request.source_url else None,
             is_authenticated=True,
             authorized_by_user_id=authorized_user_id,
+            trusted_source_id=request.trusted_source_id,
         )
         db.add(doc)
         db.flush()
@@ -224,3 +228,138 @@ class RegistryService:
         total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
         items = list(db.execute(stmt.order_by(desc(OfficialDocument.publication_date)).offset(skip).limit(limit)).scalars().all())
         return items, total
+
+    @staticmethod
+    def create_trusted_source(
+        db: Session,
+        request: TrustedSourceCreateRequest,
+        registered_by_user_id: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> TrustedSource:
+        """Register a new certified official authority in the trusted registry."""
+        existing = db.execute(select(TrustedSource).where(TrustedSource.name == request.name.strip())).scalar_one_or_none()
+        if existing:
+            raise DuplicateEntityException("TrustedSource", "name", request.name.strip())
+
+        source = TrustedSource(
+            name=request.name.strip(),
+            url=request.url.strip(),
+            category=request.category.strip().upper(),
+            verification_status=request.verification_status.strip().upper(),
+            description=request.description.strip() if request.description else None,
+            is_active=True,
+            last_retrieved_at=datetime.now(timezone.utc),
+            registered_by_user_id=registered_by_user_id,
+        )
+        db.add(source)
+        db.flush()
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="TRUSTED_SOURCE_REGISTERED",
+            entity_type="TRUSTED_SOURCE",
+            entity_id=source.id,
+            user_id=registered_by_user_id,
+            ip_address=ip_address,
+            details={"name": source.name, "category": source.category, "url": source.url},
+            commit=True,
+        )
+        db.refresh(source)
+        logger.info(f"Trusted source registered: {source.name} [{source.category}]")
+        return source
+
+    @staticmethod
+    def get_trusted_source(db: Session, source_id: str) -> TrustedSource:
+        """Retrieve trusted source by ID or raise EntityNotFoundException."""
+        source = db.execute(select(TrustedSource).where(TrustedSource.id == source_id)).scalar_one_or_none()
+        if not source:
+            raise EntityNotFoundException("TrustedSource", source_id)
+        return source
+
+    @staticmethod
+    def list_trusted_sources(
+        db: Session,
+        category: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        search_query: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> Tuple[List[TrustedSource], int]:
+        """List trusted sources with optional category and status filtering."""
+        query = select(TrustedSource)
+        if category:
+            query = query.where(TrustedSource.category == category.strip().upper())
+        if is_active is not None:
+            query = query.where(TrustedSource.is_active == is_active)
+        if search_query:
+            query = query.where(
+                TrustedSource.name.ilike(f"%{search_query}%") | TrustedSource.description.ilike(f"%{search_query}%")
+            )
+
+        total = db.execute(select(func.count()).select_from(query.subquery())).scalar_one()
+        items = list(db.execute(query.order_by(TrustedSource.name.asc()).offset(skip).limit(limit)).scalars().all())
+        return items, total
+
+    @staticmethod
+    def update_trusted_source(
+        db: Session,
+        source_id: str,
+        updates: TrustedSourceUpdateRequest,
+        modified_by_user_id: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> TrustedSource:
+        """Update trusted source details with audit logging."""
+        source = RegistryService.get_trusted_source(db, source_id)
+
+        if updates.name is not None:
+            source.name = updates.name.strip()
+        if updates.url is not None:
+            source.url = updates.url.strip()
+        if updates.category is not None:
+            source.category = updates.category.strip().upper()
+        if updates.verification_status is not None:
+            source.verification_status = updates.verification_status.strip().upper()
+        if updates.description is not None:
+            source.description = updates.description.strip()
+        if updates.is_active is not None:
+            source.is_active = updates.is_active
+
+        source.updated_at = datetime.now(timezone.utc)
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="TRUSTED_SOURCE_UPDATED",
+            entity_type="TRUSTED_SOURCE",
+            entity_id=source.id,
+            user_id=modified_by_user_id,
+            ip_address=ip_address,
+            details={"name": source.name, "category": source.category, "is_active": source.is_active},
+            commit=True,
+        )
+        db.refresh(source)
+        logger.info(f"Trusted source {source.name} updated by {modified_by_user_id}")
+        return source
+
+    @staticmethod
+    def delete_trusted_source(
+        db: Session,
+        source_id: str,
+        deleted_by_user_id: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> None:
+        """Deactivate trusted source with audit logging."""
+        source = RegistryService.get_trusted_source(db, source_id)
+        source.is_active = False
+        source.updated_at = datetime.now(timezone.utc)
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="TRUSTED_SOURCE_DEACTIVATED",
+            entity_type="TRUSTED_SOURCE",
+            entity_id=source.id,
+            user_id=deleted_by_user_id,
+            ip_address=ip_address,
+            details={"name": source.name},
+            commit=True,
+        )
+        logger.info(f"Trusted source {source.name} deactivated by {deleted_by_user_id}")

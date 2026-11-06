@@ -109,3 +109,22 @@ class PasswordResetConfirm(BaseModel):
 
     token: str
     new_password: str = Field(min_length=8)
+
+
+class UserUpdateRolesRequest(BaseModel):
+    """Admin request to update user assigned roles."""
+
+    roles: List[str] = Field(min_length=1, description="List of role names to assign (e.g. ['ANALYST'])")
+
+
+class UserUpdateStatusRequest(BaseModel):
+    """Admin request to activate or deactivate user account."""
+
+    is_active: bool
+
+
+class LogoutResponse(BaseModel):
+    """Logout response confirmation."""
+
+    logged_out: bool = True
+    message: str = "Session successfully terminated."

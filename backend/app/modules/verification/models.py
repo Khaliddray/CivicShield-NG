@@ -1,7 +1,8 @@
 """Human Verification and Evidence Review ORM Models."""
 
 from typing import List, Optional
-from sqlalchemy import String, Text, Float, Boolean, ForeignKey, JSON
+from datetime import datetime
+from sqlalchemy import String, Text, Float, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.core.database import Base, TimestampMixin, UUIDMixin
 from backend.app.common.enums import VerificationDecision, ClaimCategory, PriorityLevel
@@ -24,6 +25,33 @@ class Claim(Base, UUIDMixin, TimestampMixin):
     # Relationships
     report: Mapped["Report"] = relationship("Report", back_populates="claims")
     verifications: Mapped[List["VerificationRecord"]] = relationship("VerificationRecord", back_populates="claim", cascade="all, delete-orphan", lazy="selectin")
+    recommendations: Mapped[List["VerificationRecommendation"]] = relationship("VerificationRecommendation", back_populates="claim", cascade="all, delete-orphan", lazy="selectin")
+
+
+class VerificationRecommendation(Base, UUIDMixin, TimestampMixin):
+    """Analyst recommendation submitted for reviewer approval."""
+
+    __tablename__ = "verification_recommendations"
+
+    claim_id: Mapped[str] = mapped_column(String(36), ForeignKey("claims.id", ondelete="CASCADE"), index=True, nullable=False)
+    analyst_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), index=True, nullable=False)
+
+    recommended_decision: Mapped[str] = mapped_column(String(32), index=True, nullable=False)  # VERIFIED, CONTRADICTED, INSUFFICIENT_EVIDENCE
+    justification_notes: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_clarification: Mapped[str] = mapped_column(Text, nullable=False)
+    official_document_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("official_documents.id", ondelete="SET NULL"), nullable=True)
+    evidence_sources_consulted: Mapped[Optional[dict]] = mapped_column(JSON, default=list, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(32), default="PENDING_REVIEW", index=True, nullable=False)  # PENDING_REVIEW, APPROVED, REJECTED
+    reviewer_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
+    reviewer_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    claim: Mapped["Claim"] = relationship("Claim", back_populates="recommendations")
+    analyst: Mapped["User"] = relationship("User", foreign_keys=[analyst_id])
+    reviewer: Mapped[Optional["User"]] = relationship("User", foreign_keys=[reviewer_id])
+    official_document: Mapped[Optional["OfficialDocument"]] = relationship("OfficialDocument")
 
 
 class VerificationRecord(Base, UUIDMixin, TimestampMixin):

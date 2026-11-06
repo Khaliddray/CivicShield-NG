@@ -106,3 +106,38 @@ class PreferenceOut(BaseModel):
     channel_email: bool
 
     model_config = {"from_attributes": True}
+
+
+class AlertRejectRequest(BaseModel):
+    """Payload to reject an early warning draft."""
+
+    rejection_reason: str = Field(min_length=10, description="Mandatory official justification for rejecting draft advisory")
+
+
+class AlertApprovalRecordOut(BaseModel):
+    """Historical audit entry for alert approval or rejection."""
+
+    id: str
+    alert_id: str
+    action: str
+    officer_user_id: str
+    comments: Optional[str] = None
+    recorded_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class NotificationDeliveryOut(BaseModel):
+    """In-app citizen notification delivery item."""
+
+    id: str
+    alert_id: str
+    channel: str
+    delivery_status: str
+    delivered_at: datetime
+    read_at: Optional[datetime] = None
+    alert_title: Optional[str] = None
+    alert_summary: Optional[str] = None
+    alert_severity: Optional[str] = None
+
+    model_config = {"from_attributes": True}

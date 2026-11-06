@@ -35,6 +35,23 @@ class Alert(Base, UUIDMixin, TimestampMixin):
     approved_by_user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[approved_by_user_id])
     verification_record: Mapped[Optional["VerificationRecord"]] = relationship("VerificationRecord", back_populates="alerts")
     deliveries: Mapped[List["NotificationDelivery"]] = relationship("NotificationDelivery", back_populates="alert", cascade="all, delete-orphan")
+    approvals: Mapped[List["AlertApprovalRecord"]] = relationship("AlertApprovalRecord", back_populates="alert", cascade="all, delete-orphan", lazy="selectin")
+
+
+class AlertApprovalRecord(Base, UUIDMixin, TimestampMixin):
+    """Historical audit record of alert approval, rejection, or submission."""
+
+    __tablename__ = "alert_approval_records"
+
+    alert_id: Mapped[str] = mapped_column(String(36), ForeignKey("alerts.id", ondelete="CASCADE"), index=True, nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)  # SUBMITTED, APPROVED, REJECTED, WITHDRAWN
+    officer_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), index=True, nullable=False)
+    comments: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    # Relationships
+    alert: Mapped["Alert"] = relationship("Alert", back_populates="approvals")
+    officer: Mapped["User"] = relationship("User")
 
 
 class NotificationPreference(Base, UUIDMixin, TimestampMixin):

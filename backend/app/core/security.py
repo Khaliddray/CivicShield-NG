@@ -47,6 +47,7 @@ def create_access_token(subject: str, additional_claims: Optional[Dict[str, Any]
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
         "type": "access",
+        "jti": secrets.token_hex(16),
     }
     if additional_claims:
         payload.update(additional_claims)
@@ -104,3 +105,75 @@ def compute_audit_hash(previous_hash: str, action: str, entity_id: str, timestam
     """Compute cryptographic hash chaining for tamper-evident audit ledger."""
     entry_payload = f"{previous_hash}|{action}|{entity_id}|{timestamp_str}"
     return hashlib.sha256(entry_payload.encode("utf-8")).hexdigest()
+
+
+_REVOKED_TOKENS_MEM_CACHE: set = set()
+
+
+def get_token_identifier(token: str, payload: Optional[Dict[str, Any]] = None) -> str:
+    """Extract jti claim or deterministic sha256 token fingerprint."""
+    if payload and "jti" in payload:
+        return str(payload["jti"])
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        if "jti" in unverified:
+            return str(unverified["jti"])
+    except Exception:
+        pass
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def revoke_token(
+    db: Any,
+    token: str,
+    user_id: Optional[str] = None,
+    reason: str = "USER_LOGOUT",
+) -> None:
+    """Revoke an active JWT token and add it to the cryptographic blacklist."""
+    from backend.app.modules.auth.models import RevokedToken
+    from sqlalchemy import select
+
+    token_id = get_token_identifier(token)
+    _REVOKED_TOKENS_MEM_CACHE.add(token_id)
+
+    # Determine expiry
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        if "exp" in unverified:
+            expires_at = datetime.fromtimestamp(unverified["exp"], tz=timezone.utc)
+    except Exception:
+        pass
+
+    existing = db.execute(select(RevokedToken).where(RevokedToken.token_identifier == token_id)).scalar_one_or_none()
+    if not existing:
+        revocation = RevokedToken(
+            token_identifier=token_id,
+            user_id=user_id,
+            revoked_at=now,
+            expires_at=expires_at,
+            reason=reason,
+        )
+        db.add(revocation)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+
+def is_token_revoked(db: Any, token: str) -> bool:
+    """Check if token identifier exists in memory cache or persisted revoked_tokens table."""
+    from backend.app.modules.auth.models import RevokedToken
+    from sqlalchemy import select
+
+    token_id = get_token_identifier(token)
+    if token_id in _REVOKED_TOKENS_MEM_CACHE:
+        return True
+
+    existing = db.execute(select(RevokedToken).where(RevokedToken.token_identifier == token_id)).scalar_one_or_none()
+    if existing:
+        _REVOKED_TOKENS_MEM_CACHE.add(token_id)
+        return True
+
+    return False

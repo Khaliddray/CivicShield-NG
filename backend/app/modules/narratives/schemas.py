@@ -37,12 +37,25 @@ class NarrativeClusterOut(BaseModel):
     velocity_score: float
     amplification_pattern: str
     geographic_scope: Optional[list] = []
+    status: str = "ACTIVE"
+    verification_status: str = "UNVERIFIED"
+    first_reported_at: Optional[datetime] = None
+    last_reported_at: Optional[datetime] = None
+    assigned_analyst_id: Optional[str] = None
     reports_count: int = 0
     threat_indicators_count: int = 0
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ClusterUpdateRequest(BaseModel):
+    """Payload for updating cluster status or assigning analyst."""
+
+    status: Optional[str] = None
+    verification_status: Optional[str] = None
+    assigned_analyst_id: Optional[str] = None
 
 
 class NarrativeClusterDetailOut(NarrativeClusterOut):

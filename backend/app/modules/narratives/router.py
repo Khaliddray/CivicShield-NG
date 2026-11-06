@@ -1,10 +1,14 @@
 """Coordinated Narrative Detection API Endpoints."""
 
+import asyncio
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query, status
+import json
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 
-from backend.app.core.database import get_db
+from backend.app.core.logging import logger
+from backend.app.core.database import get_db, SessionLocal
 from backend.app.core.dependencies import require_permission
 from backend.app.core.exceptions import EntityNotFoundException
 from backend.app.common.schemas import APIResponse
@@ -13,6 +17,7 @@ from backend.app.modules.narratives.schemas import (
     NarrativeClusterOut,
     NarrativeClusterDetailOut,
     NarrativeGraphOut,
+    ClusterUpdateRequest,
 )
 from backend.app.modules.narratives.service import NarrativesService
 
@@ -94,3 +99,101 @@ def trigger_clustering_scan(
         data={"clusters_updated_or_formed": count, "lookback_hours": lookback_hours},
         message=f"Narrative scan completed. Formed or updated {count} cluster(s).",
     )
+
+
+@router.patch(
+    "/clusters/{cluster_id}",
+    response_model=APIResponse[NarrativeClusterDetailOut],
+    summary="Update narrative cluster status or analyst assignment (Command Centre)",
+)
+def update_narrative_cluster(
+    cluster_id: str,
+    payload: ClusterUpdateRequest,
+    current_user: User = Depends(require_permission("narratives:view")),
+    db: Session = Depends(get_db),
+) -> APIResponse[NarrativeClusterDetailOut]:
+    """Update cluster investigation status, verification status, or analyst assignment."""
+    updated = NarrativesService.update_cluster(
+        db=db,
+        cluster_id=cluster_id,
+        status=payload.status,
+        verification_status=payload.verification_status,
+        assigned_analyst_id=payload.assigned_analyst_id,
+        modified_by_user_id=current_user.id,
+    )
+    detail = NarrativesService.get_cluster_detail(db=db, cluster_id=cluster_id)
+    if ws_manager.active_connections:
+        asyncio.create_task(ws_manager.broadcast("CLUSTER_UPDATED", detail.model_dump(mode="json")))
+    return APIResponse(
+        data=detail,
+        message=f"Narrative cluster '{cluster_id}' updated successfully.",
+    )
+
+
+class NarrativeWebSocketManager:
+    """Manages active live WebSocket connections and broadcasts real-time intelligence events."""
+
+    def __init__(self) -> None:
+        self.active_connections: List[WebSocket] = []
+        self._lock = asyncio.Lock()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        async with self._lock:
+            self.active_connections.append(websocket)
+        logger.info(f"WebSocket client connected. Active connections: {len(self.active_connections)}")
+
+    async def disconnect(self, websocket: WebSocket) -> None:
+        async with self._lock:
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
+        logger.info(f"WebSocket client disconnected. Active connections: {len(self.active_connections)}")
+
+    async def broadcast(self, event_type: str, data: dict) -> None:
+        """Push real-time event to all connected clients."""
+        payload = json.dumps({"event": event_type, "data": data, "timestamp": datetime.now(timezone.utc).isoformat()})
+        async with self._lock:
+            dead_connections = []
+            for ws in self.active_connections:
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    dead_connections.append(ws)
+            for dead in dead_connections:
+                if dead in self.active_connections:
+                    self.active_connections.remove(dead)
+
+
+ws_manager = NarrativeWebSocketManager()
+
+
+@router.websocket("/ws")
+async def narrative_pulse_websocket(websocket: WebSocket) -> None:
+    """Real-time live WebSocket channel for Narrative Pulse Command Centre dashboard."""
+    await ws_manager.connect(websocket)
+    try:
+        with SessionLocal() as db:
+            clusters = NarrativesService.get_clusters(db=db, limit=10)
+            initial_payload = {
+                "event": "INITIAL_CLUSTERS",
+                "clusters_count": len(clusters),
+                "clusters": [c.model_dump(mode="json") for c in clusters],
+            }
+            await websocket.send_text(json.dumps(initial_payload))
+
+        while True:
+            # Keep-alive loop listening for client ping/refresh requests
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+            elif data == "refresh":
+                with SessionLocal() as db:
+                    fresh_clusters = NarrativesService.get_clusters(db=db, limit=10)
+                    await websocket.send_text(json.dumps({
+                        "event": "CLUSTER_REFRESH",
+                        "clusters": [c.model_dump(mode="json") for c in fresh_clusters],
+                    }))
+    except WebSocketDisconnect:
+        await ws_manager.disconnect(websocket)
+    except Exception:
+        await ws_manager.disconnect(websocket)

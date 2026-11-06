@@ -62,8 +62,14 @@ def list_audit_logs(
     response_model=APIResponse[AuditLedgerVerificationResult],
     summary="Cryptographically verify audit ledger hash chain integrity",
 )
+@router.post(
+    "/verify-ledger",
+    response_model=APIResponse[AuditLedgerVerificationResult],
+    summary="Cryptographically verify audit ledger hash chain integrity (Alias)",
+    include_in_schema=False,
+)
 def verify_audit_ledger(
-    limit: int = Query(500, ge=10, le=5000),
+    limit: int = Query(10000, ge=10, le=50000),
     current_user: User = Depends(require_permission("audit:read")),
     db: Session = Depends(get_db),
 ) -> APIResponse[AuditLedgerVerificationResult]:

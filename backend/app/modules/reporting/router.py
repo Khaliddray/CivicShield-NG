@@ -4,17 +4,21 @@ import math
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, Form, File, UploadFile, Request, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
 from backend.app.core.dependencies import get_current_user, get_optional_current_user, require_permission
-from backend.app.core.exceptions import EntityNotFoundException, ValidationException
+from backend.app.core.exceptions import EntityNotFoundException, ValidationException, AuthorizationException
 from backend.app.common.schemas import APIResponse, PaginatedResponse, PaginationMeta
 from backend.app.modules.auth.models import User
 from backend.app.modules.reporting.schemas import (
     ReportCreateRequest,
     ReportPublicOut,
     ReportDetailOut,
+    ReportStatusUpdateRequest,
+    ReportAssignRequest,
+    ReportWithdrawRequest,
 )
 from backend.app.modules.reporting.service import ReportingService
 
@@ -201,4 +205,128 @@ def get_report_detail(
     return APIResponse(
         data=ReportDetailOut.model_validate(report),
         message="Report details retrieved successfully.",
+    )
+
+
+@router.patch(
+    "/{report_id}/status",
+    response_model=APIResponse[ReportDetailOut],
+    summary="Update report lifecycle status (Analysts & Officers)",
+)
+def update_report_status(
+    report_id: str,
+    payload: ReportStatusUpdateRequest,
+    current_user: User = Depends(require_permission("reports:manage")),
+    db: Session = Depends(get_db),
+) -> APIResponse[ReportDetailOut]:
+    """Transition report status (e.g. UNVERIFIED, UNDER_REVIEW, VERIFIED, CONTRADICTED, WITHDRAWN) with audit tracking."""
+    report = ReportingService.update_status(
+        db=db,
+        report_id=report_id,
+        new_status=payload.status,
+        notes=payload.notes,
+        changed_by_user_id=current_user.id,
+    )
+    return APIResponse(
+        data=ReportDetailOut.model_validate(report),
+        message=f"Report status updated to '{report.status}'.",
+    )
+
+
+@router.post(
+    "/{report_id}/assign",
+    response_model=APIResponse[ReportDetailOut],
+    summary="Assign an analyst to an incoming report (Command Centre)",
+)
+def assign_report(
+    report_id: str,
+    payload: ReportAssignRequest,
+    current_user: User = Depends(require_permission("reports:manage")),
+    db: Session = Depends(get_db),
+) -> APIResponse[ReportDetailOut]:
+    """Assign investigation lead to a citizen report."""
+    report = ReportingService.assign_analyst(
+        db=db,
+        report_id=report_id,
+        analyst_id=payload.analyst_user_id,
+        assigned_by_user_id=current_user.id,
+        notes=payload.notes,
+    )
+    return APIResponse(
+        data=ReportDetailOut.model_validate(report),
+        message="Report successfully assigned to analyst.",
+    )
+
+
+@router.post(
+    "/{report_id}/withdraw",
+    response_model=APIResponse[ReportPublicOut],
+    summary="Withdraw a report from active investigation (Submitter or Officers)",
+)
+def withdraw_report(
+    report_id: str,
+    payload: ReportWithdrawRequest,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> APIResponse[ReportPublicOut]:
+    """Withdraw or retract a report with recorded justification."""
+    report = ReportingService.get_by_id(db=db, report_id=report_id)
+    if not report:
+        raise EntityNotFoundException("Report", report_id)
+
+    # Permission check: Submitter OR has reports:manage
+    can_withdraw = False
+    if current_user:
+        if current_user.id == report.user_id or current_user.has_permission("reports:manage") or current_user.has_role("ADMINISTRATOR"):
+            can_withdraw = True
+
+    if not can_withdraw:
+        raise AuthorizationException("You do not have permission to withdraw this report.")
+
+    withdrawn = ReportingService.withdraw_report(
+        db=db,
+        report_id=report_id,
+        withdrawn_by_user_id=current_user.id if current_user else None,
+        reason=payload.reason,
+    )
+    return APIResponse(
+        data=_to_public_out(withdrawn),
+        message="Report has been successfully withdrawn.",
+    )
+
+
+@router.get(
+    "/{report_id}/evidence/{evidence_id}/download",
+    summary="Download attached evidence file securely (Controlled Access)",
+)
+@router.get(
+    "/evidence/{evidence_id}/download",
+    summary="Download evidence file by ID (Controlled Access)",
+    include_in_schema=False,
+)
+def download_evidence(
+    evidence_id: str,
+    report_id: Optional[str] = None,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Secure evidence file retrieval preventing path traversal and unauthorized data leakage."""
+    evidence = ReportingService.get_evidence(db=db, evidence_id=evidence_id)
+    report = ReportingService.get_by_id(db=db, report_id=evidence.report_id)
+
+    # Authorization verification
+    authorized = False
+    if current_user:
+        if current_user.has_permission("reports:view_all") or (report and report.user_id == current_user.id):
+            authorized = True
+
+    if not authorized:
+        raise AuthorizationException("You are not authorized to access this evidence asset.")
+
+    file_path = ReportingService.get_secure_file_path(evidence)
+
+    return FileResponse(
+        path=str(file_path),
+        filename=evidence.original_file_name,
+        media_type=evidence.mime_type,
     )

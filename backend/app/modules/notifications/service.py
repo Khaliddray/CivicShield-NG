@@ -10,7 +10,7 @@ from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.core.security import compute_audit_hash
 from backend.app.core.exceptions import EntityNotFoundException, ValidationException
-from backend.app.modules.notifications.models import Alert, NotificationPreference
+from backend.app.modules.notifications.models import Alert, NotificationPreference, NotificationDelivery, AlertApprovalRecord
 from backend.app.modules.notifications.schemas import (
     AlertCreateRequest,
     PreferenceUpdateRequest,
@@ -87,6 +87,15 @@ class NotificationService:
         db.add(alert)
         db.flush()
 
+        # Approval history entry
+        approval_rec = AlertApprovalRecord(
+            alert_id=alert.id,
+            action="DRAFTED",
+            officer_user_id=author_id,
+            comments="Alert drafted and queued for approval.",
+        )
+        db.add(approval_rec)
+
         # Audit log
         SecurityAuditService.record_audit(
             db=db,
@@ -150,10 +159,19 @@ class NotificationService:
             # Query users whose state matches target states
             target_users_query = target_users_query.where(User.state_of_residence.in_(alert.target_states))
 
-        target_users = list(db.execute(target_users_query.limit(500)).scalars().all())
+        target_users = list(db.execute(target_users_query.limit(10000)).scalars().all())
 
         # Dispatch across in-app channel
         cls._in_app_channel.dispatch(alert=alert, target_users=target_users, db=db)
+
+        # Record approval in history
+        approval_rec = AlertApprovalRecord(
+            alert_id=alert.id,
+            action="APPROVED",
+            officer_user_id=approver_id,
+            comments=f"Alert approved and broadcast to {len(target_users)} users across in-app channels.",
+        )
+        db.add(approval_rec)
 
         # Audit publication
         SecurityAuditService.record_audit(
@@ -190,6 +208,15 @@ class NotificationService:
         alert.full_clarification += f"\n\n[OFFICIAL WITHDRAWAL ADVISORY - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}]: {reason.strip()}"
         alert.updated_at = datetime.now(timezone.utc)
 
+        # Record withdrawal history
+        approval_rec = AlertApprovalRecord(
+            alert_id=alert.id,
+            action="WITHDRAWN",
+            officer_user_id=officer_id,
+            comments=reason.strip(),
+        )
+        db.add(approval_rec)
+
         SecurityAuditService.record_audit(
             db=db,
             action="ALERT_WITHDRAWN",
@@ -204,6 +231,150 @@ class NotificationService:
         db.refresh(alert)
         logger.info(f"Alert {alert.alert_reference} withdrawn by officer {officer_id}")
         return alert
+
+    @staticmethod
+    def reject_alert(
+        db: Session,
+        alert_id: str,
+        reason: str,
+        officer_id: str,
+    ) -> Alert:
+        """Reject an alert draft with mandatory officer justification."""
+        alert = db.execute(select(Alert).where(Alert.id == alert_id)).scalar_one_or_none()
+        if not alert:
+            raise EntityNotFoundException("Alert", alert_id)
+
+        alert.status = "REJECTED"
+        alert.updated_at = datetime.now(timezone.utc)
+
+        approval_rec = AlertApprovalRecord(
+            alert_id=alert.id,
+            action="REJECTED",
+            officer_user_id=officer_id,
+            comments=reason.strip(),
+        )
+        db.add(approval_rec)
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="ALERT_REJECTED",
+            entity_type="ALERT",
+            entity_id=alert.id,
+            user_id=officer_id,
+            details={"reason": reason, "alert_reference": alert.alert_reference},
+            commit=True,
+        )
+        db.refresh(alert)
+        logger.info(f"Alert {alert.alert_reference} rejected by officer {officer_id}: {reason}")
+        return alert
+
+    @staticmethod
+    def submit_for_approval(
+        db: Session,
+        alert_id: str,
+        officer_id: str,
+    ) -> Alert:
+        """Submit a draft alert for lead officer approval."""
+        alert = db.execute(select(Alert).where(Alert.id == alert_id)).scalar_one_or_none()
+        if not alert:
+            raise EntityNotFoundException("Alert", alert_id)
+
+        alert.status = AlertStatus.PENDING_APPROVAL.value
+        alert.updated_at = datetime.now(timezone.utc)
+
+        approval_rec = AlertApprovalRecord(
+            alert_id=alert.id,
+            action="SUBMITTED",
+            officer_user_id=officer_id,
+            comments="Submitted draft for institutional verification signoff.",
+        )
+        db.add(approval_rec)
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="ALERT_SUBMITTED_FOR_APPROVAL",
+            entity_type="ALERT",
+            entity_id=alert.id,
+            user_id=officer_id,
+            details={"alert_reference": alert.alert_reference},
+            commit=True,
+        )
+        db.refresh(alert)
+        logger.info(f"Alert {alert.alert_reference} submitted for approval by {officer_id}")
+        return alert
+
+    @staticmethod
+    def get_alert_approvals(db: Session, alert_id: str) -> List[AlertApprovalRecord]:
+        """Fetch complete approval/rejection audit trail for an alert."""
+        return list(
+            db.execute(
+                select(AlertApprovalRecord)
+                .where(AlertApprovalRecord.alert_id == alert_id)
+                .order_by(AlertApprovalRecord.recorded_at.asc())
+            ).scalars().all()
+        )
+
+    @staticmethod
+    def list_user_notifications(
+        db: Session,
+        user_id: str,
+        unread_only: bool = False,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> List[dict]:
+        """Retrieve in-app notifications delivered to a user."""
+        query = (
+            select(NotificationDelivery, Alert)
+            .join(Alert, NotificationDelivery.alert_id == Alert.id)
+            .where(NotificationDelivery.recipient_user_id == user_id)
+        )
+        if unread_only:
+            query = query.where(NotificationDelivery.read_at == None)
+
+        query = query.order_by(desc(NotificationDelivery.delivered_at)).offset(skip).limit(limit)
+        results = db.execute(query).all()
+
+        deliveries = []
+        for delivery, alert in results:
+            deliveries.append({
+                "id": delivery.id,
+                "alert_id": alert.id,
+                "channel": delivery.channel,
+                "delivery_status": delivery.delivery_status,
+                "delivered_at": delivery.delivered_at,
+                "read_at": delivery.read_at,
+                "alert_title": alert.title,
+                "alert_summary": alert.summary,
+                "alert_severity": alert.severity,
+            })
+        return deliveries
+
+    @staticmethod
+    def mark_notification_read(db: Session, delivery_id: str, user_id: str) -> NotificationDelivery:
+        """Mark an in-app notification delivery as read."""
+        delivery = db.execute(
+            select(NotificationDelivery).where(
+                and_(NotificationDelivery.id == delivery_id, NotificationDelivery.recipient_user_id == user_id)
+            )
+        ).scalar_one_or_none()
+        if not delivery:
+            raise EntityNotFoundException("NotificationDelivery", delivery_id)
+
+        delivery.read_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(delivery)
+        return delivery
+
+    @staticmethod
+    def get_unread_notification_count(db: Session, user_id: str) -> int:
+        """Count unread in-app notifications for authenticated user."""
+        from sqlalchemy import func
+        count = db.execute(
+            select(func.count(NotificationDelivery.id)).where(
+                and_(NotificationDelivery.recipient_user_id == user_id, NotificationDelivery.read_at == None)
+            )
+        ).scalar_one()
+        return count
 
     @staticmethod
     def get_active_alerts(

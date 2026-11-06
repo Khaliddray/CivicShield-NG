@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
-from backend.app.core.security import decode_token
+from backend.app.core.security import decode_token, is_token_revoked
 from backend.app.core.exceptions import AuthenticationException, AuthorizationException
 from backend.app.modules.auth.models import User
 
@@ -28,6 +28,11 @@ def get_current_user(
         raise AuthenticationException("Authentication required. Missing Bearer token.")
 
     payload = decode_token(token, expected_type="access")
+
+    # Check token revocation
+    if is_token_revoked(db, token):
+        raise AuthenticationException("Authentication token has been revoked. Please log in again.")
+
     user_id = payload.get("sub")
     if not user_id:
         raise AuthenticationException("Malformed authentication token.")
@@ -87,6 +92,21 @@ def require_permission(required_permission: str) -> Callable[[User], User]:
         if not current_user.has_permission(required_permission) and not current_user.has_role("ADMINISTRATOR"):
             raise AuthorizationException(
                 f"Permission '{required_permission}' is required to perform this action."
+            )
+        return current_user
+
+    return permission_checker
+
+
+def require_any_permission(*required_permissions: str) -> Callable[[User], User]:
+    """Factory dependency requiring the user to possess at least one of the specified permissions."""
+
+    def permission_checker(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.has_role("ADMINISTRATOR"):
+            return current_user
+        if not any(current_user.has_permission(p) for p in required_permissions):
+            raise AuthorizationException(
+                f"One of the following permissions is required: {', '.join(required_permissions)}"
             )
         return current_user
 

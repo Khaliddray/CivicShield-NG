@@ -25,9 +25,11 @@ class Report(Base, UUIDMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default=ReportStatus.SUBMITTED.value, index=True, nullable=False)
     priority: Mapped[str] = mapped_column(String(16), default=PriorityLevel.MEDIUM.value, nullable=False)
     submitter_ip_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    assigned_analyst_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # Relationships
-    submitter: Mapped[Optional["User"]] = relationship("User", back_populates="reports")
+    submitter: Mapped[Optional["User"]] = relationship("User", foreign_keys=[user_id], back_populates="reports")
+    assigned_analyst: Mapped[Optional["User"]] = relationship("User", foreign_keys=[assigned_analyst_id])
     evidence_items: Mapped[List["UploadedEvidence"]] = relationship("UploadedEvidence", back_populates="report", cascade="all, delete-orphan", lazy="selectin")
     claims: Mapped[List["Claim"]] = relationship("Claim", back_populates="report", cascade="all, delete-orphan", lazy="selectin")
     status_history: Mapped[List["ReportStatusHistory"]] = relationship("ReportStatusHistory", back_populates="report", cascade="all, delete-orphan")

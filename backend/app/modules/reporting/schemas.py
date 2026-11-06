@@ -95,6 +95,7 @@ class ReportDetailOut(BaseModel):
     incident_date: Optional[datetime] = None
     status: str
     priority: str
+    assigned_analyst_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     evidence_items: List[EvidenceOut] = []
@@ -102,3 +103,23 @@ class ReportDetailOut(BaseModel):
     status_history: List[StatusHistoryOut] = []
 
     model_config = {"from_attributes": True}
+
+
+class ReportStatusUpdateRequest(BaseModel):
+    """Payload for updating report lifecycle status."""
+
+    status: str = Field(description="New status: UNVERIFIED, UNDER_REVIEW, VERIFIED, CONTRADICTED, INSUFFICIENT_EVIDENCE, WITHDRAWN, RESOLVED, DISMISSED")
+    notes: Optional[str] = Field(default=None, description="Analyst or officer notes justifying the status change")
+
+
+class ReportAssignRequest(BaseModel):
+    """Payload for assigning an analyst to a report."""
+
+    analyst_user_id: str = Field(description="UUID of analyst user to assign")
+    notes: Optional[str] = Field(default=None, description="Assignment guidance or notes")
+
+
+class ReportWithdrawRequest(BaseModel):
+    """Payload for withdrawing a report."""
+
+    reason: str = Field(min_length=5, description="Reason for withdrawing the report")

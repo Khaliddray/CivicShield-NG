@@ -69,6 +69,11 @@ class NarrativesService:
                     cluster_id = existing_assignments.get(rep_a.id) or existing_assignments.get(rep_b.id)
 
                     if not cluster_id:
+                        # Determine timestamps
+                        dates = [d for d in [rep_a.incident_date, rep_b.incident_date, rep_a.created_at, rep_b.created_at] if d]
+                        first_dt = min(dates) if dates else datetime.now(timezone.utc)
+                        last_dt = max(dates) if dates else datetime.now(timezone.utc)
+
                         # Create new NarrativeCluster
                         cluster = NarrativeCluster(
                             cluster_title=f"Coordinated Narrative: {rep_a.title[:60]}...",
@@ -76,6 +81,10 @@ class NarrativesService:
                             velocity_score=1.5,
                             amplification_pattern="SYNCHRONIZED_POSTING" if rep_a.nigerian_state != rep_b.nigerian_state else "LOCALIZED_SURGE",
                             geographic_scope=list({s for s in [rep_a.nigerian_state, rep_b.nigerian_state] if s}),
+                            status="ACTIVE",
+                            verification_status="UNVERIFIED",
+                            first_reported_at=first_dt,
+                            last_reported_at=last_dt,
                         )
                         db.add(cluster)
                         db.flush()
@@ -135,6 +144,11 @@ class NarrativesService:
                     velocity_score=c.velocity_score,
                     amplification_pattern=c.amplification_pattern,
                     geographic_scope=c.geographic_scope or [],
+                    status=getattr(c, "status", "ACTIVE"),
+                    verification_status=getattr(c, "verification_status", "UNVERIFIED"),
+                    first_reported_at=getattr(c, "first_reported_at", None),
+                    last_reported_at=getattr(c, "last_reported_at", None),
+                    assigned_analyst_id=getattr(c, "assigned_analyst_id", None),
                     reports_count=len(c.cluster_reports),
                     threat_indicators_count=len(c.threat_indicators),
                     created_at=c.created_at,
@@ -173,6 +187,11 @@ class NarrativesService:
             velocity_score=cluster.velocity_score,
             amplification_pattern=cluster.amplification_pattern,
             geographic_scope=cluster.geographic_scope or [],
+            status=getattr(cluster, "status", "ACTIVE"),
+            verification_status=getattr(cluster, "verification_status", "UNVERIFIED"),
+            first_reported_at=getattr(cluster, "first_reported_at", None),
+            last_reported_at=getattr(cluster, "last_reported_at", None),
+            assigned_analyst_id=getattr(cluster, "assigned_analyst_id", None),
             reports_count=len(cluster.cluster_reports),
             threat_indicators_count=len(cluster.threat_indicators),
             created_at=cluster.created_at,
@@ -180,6 +199,47 @@ class NarrativesService:
             cluster_reports=reports_summary,
             threat_indicators=[ThreatIndicatorOut.model_validate(ti) for ti in cluster.threat_indicators],
         )
+
+    @staticmethod
+    def update_cluster(
+        db: Session,
+        cluster_id: str,
+        status: Optional[str] = None,
+        verification_status: Optional[str] = None,
+        assigned_analyst_id: Optional[str] = None,
+        modified_by_user_id: Optional[str] = None,
+    ) -> NarrativeCluster:
+        """Update cluster management status or analyst assignment."""
+        from backend.app.modules.security_audit.service import SecurityAuditService
+        cluster = db.execute(select(NarrativeCluster).where(NarrativeCluster.id == cluster_id)).scalar_one_or_none()
+        if not cluster:
+            raise EntityNotFoundException("NarrativeCluster", cluster_id)
+
+        if status:
+            cluster.status = status.upper()
+        if verification_status:
+            cluster.verification_status = verification_status.upper()
+        if assigned_analyst_id:
+            cluster.assigned_analyst_id = assigned_analyst_id
+
+        cluster.updated_at = datetime.now(timezone.utc)
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="NARRATIVE_CLUSTER_UPDATED",
+            entity_type="NARRATIVE_CLUSTER",
+            entity_id=cluster.id,
+            user_id=modified_by_user_id,
+            details={
+                "status": cluster.status,
+                "verification_status": cluster.verification_status,
+                "assigned_analyst_id": cluster.assigned_analyst_id,
+            },
+            commit=True,
+        )
+        db.refresh(cluster)
+        logger.info(f"Narrative cluster {cluster.id} updated: status={cluster.status}, analyst={cluster.assigned_analyst_id}")
+        return cluster
 
     @staticmethod
     def get_graph_data(db: Session, limit_clusters: int = 20) -> NarrativeGraphOut:

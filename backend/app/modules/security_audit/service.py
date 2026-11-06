@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
+import threading
 from sqlalchemy import select, func, desc, and_
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,8 @@ GENESIS_HASH = "GENESIS_ROOT_000000000000000000000000000000000000000000000000000
 class SecurityAuditService:
     """Manages immutable audit log recording, cryptographic chain verification, and security incident resolution."""
 
+    _audit_lock = threading.Lock()
+
     @classmethod
     def record_audit(
         cls,
@@ -36,36 +39,37 @@ class SecurityAuditService:
         commit: bool = True,
     ) -> AuditLog:
         """Create a new tamper-evident audit log entry chained to the previous entry hash."""
-        # Retrieve the latest audit log entry to establish the cryptographic link
-        latest_entry = db.execute(
-            select(AuditLog).order_by(desc(AuditLog.recorded_at), desc(AuditLog.id)).limit(1)
-        ).scalar_one_or_none()
-        previous_hash = latest_entry.sha256_entry_hash if latest_entry else GENESIS_HASH
+        with cls._audit_lock:
+            # Retrieve the latest audit log entry to establish the cryptographic link
+            latest_entry = db.execute(
+                select(AuditLog).order_by(desc(AuditLog.recorded_at), desc(AuditLog.id)).limit(1)
+            ).scalar_one_or_none()
+            previous_hash = latest_entry.sha256_entry_hash if latest_entry else GENESIS_HASH
 
-        now = datetime.now(timezone.utc)
-        timestamp_str = now.isoformat()
-        current_hash = compute_audit_hash(previous_hash, action, entity_id, timestamp_str)
+            now = datetime.now(timezone.utc)
+            timestamp_str = now.isoformat()
+            current_hash = compute_audit_hash(previous_hash, action, entity_id, timestamp_str)
 
-        log_entry = AuditLog(
-            user_id=user_id,
-            action=action,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            details=details or {},
-            sha256_entry_hash=current_hash,
-            previous_entry_hash=previous_hash,
-            recorded_at=now,
-        )
-        db.add(log_entry)
-        if commit:
-            db.commit()
-            db.refresh(log_entry)
-        return log_entry
+            log_entry = AuditLog(
+                user_id=user_id,
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=details or {},
+                sha256_entry_hash=current_hash,
+                previous_entry_hash=previous_hash,
+                recorded_at=now,
+            )
+            db.add(log_entry)
+            if commit:
+                db.commit()
+                db.refresh(log_entry)
+            return log_entry
 
     @classmethod
-    def verify_ledger_integrity(cls, db: Session, limit: int = 500) -> AuditLedgerVerificationResult:
+    def verify_ledger_integrity(cls, db: Session, limit: int = 10000) -> AuditLedgerVerificationResult:
         """
         Traverse the audit ledger sequentially and verify every link in the cryptographic hash chain.
         Proves whether any record has been modified, tampered with, or deleted.

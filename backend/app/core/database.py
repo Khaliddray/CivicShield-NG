@@ -8,17 +8,30 @@ from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase, Mapped, mappe
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 
-# Configure connection arguments based on database dialect
+# Configure connection arguments and engine parameters based on database dialect
 connect_args = {}
+engine_kwargs = {
+    "echo": settings.DATABASE_ECHO,
+    "future": True,
+}
+
 if settings.DATABASE_URL.startswith("sqlite"):
     connect_args["check_same_thread"] = False
+else:
+    # Production PostgreSQL connection pool configuration
+    engine_kwargs.update({
+        "pool_size": 20,
+        "max_overflow": 40,
+        "pool_timeout": 30,
+        "pool_recycle": 1800,
+        "pool_pre_ping": True,
+    })
 
 # Create database engine
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args=connect_args,
-    echo=settings.DATABASE_ECHO,
-    future=True,
+    **engine_kwargs,
 )
 
 # Enable foreign keys and WAL mode for SQLite

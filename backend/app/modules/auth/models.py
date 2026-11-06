@@ -44,7 +44,8 @@ class User(Base, UUIDMixin, TimestampMixin):
 
     # Relationships
     roles: Mapped[List["Role"]] = relationship("Role", secondary=user_roles, back_populates="users", lazy="selectin")
-    reports: Mapped[List["Report"]] = relationship("Report", back_populates="submitter")
+    reports: Mapped[List["Report"]] = relationship("Report", back_populates="submitter", foreign_keys="Report.user_id")
+    assigned_reports: Mapped[List["Report"]] = relationship("Report", back_populates="assigned_analyst", foreign_keys="Report.assigned_analyst_id")
     verifications: Mapped[List["VerificationRecord"]] = relationship("VerificationRecord", back_populates="verified_by_user")
     alerts_created: Mapped[List["Alert"]] = relationship("Alert", back_populates="created_by_user", foreign_keys="Alert.created_by_user_id")
     notification_preferences: Mapped[Optional["NotificationPreference"]] = relationship("NotificationPreference", back_populates="user", uselist=False)
@@ -84,3 +85,15 @@ class Permission(Base, UUIDMixin, TimestampMixin):
 
     # Relationships
     roles: Mapped[List["Role"]] = relationship("Role", secondary=role_permissions, back_populates="permissions")
+
+
+class RevokedToken(Base, UUIDMixin, TimestampMixin):
+    """Revoked JWT token records for security blacklist / immediate session invalidation."""
+
+    __tablename__ = "revoked_tokens"
+
+    token_identifier: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(String(255), default="USER_LOGOUT", nullable=True)

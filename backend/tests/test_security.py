@@ -105,22 +105,23 @@ class TestSecurityModule(unittest.TestCase):
             log_entry.action = "TAMPERED_ACTION_MALICIOUS"
             db.commit()
 
-        # Run verification tool - must detect break in chain
-        verify_res = self.client.post(
-            "/api/v1/security/audit-logs/verify-ledger",
-            headers={"Authorization": f"Bearer {self.sec_token}"},
-        )
-        self.assertEqual(verify_res.status_code, 200)
-        data = verify_res.json()["data"]
-        self.assertFalse(data["is_valid"])
-        self.assertEqual(data["broken_chain_at_id"], tamper_id)
-        self.assertIn("tampering detected", data["verification_message"].lower())
-
-        # Restore original action to maintain clean DB integrity
-        with SessionLocal() as db:
-            clean_entry = db.execute(select(AuditLog).where(AuditLog.id == tamper_id)).scalar_one()
-            clean_entry.action = original_action
-            db.commit()
+        try:
+            # Run verification tool - must detect break in chain
+            verify_res = self.client.post(
+                "/api/v1/security/audit-logs/verify-ledger",
+                headers={"Authorization": f"Bearer {self.sec_token}"},
+            )
+            self.assertEqual(verify_res.status_code, 200)
+            data = verify_res.json()["data"]
+            self.assertFalse(data["is_valid"])
+            self.assertEqual(data["broken_chain_at_id"], tamper_id)
+            self.assertIn("tampering detected", data["verification_message"].lower())
+        finally:
+            # Restore original action to maintain clean DB integrity
+            with SessionLocal() as db:
+                clean_entry = db.execute(select(AuditLog).where(AuditLog.id == tamper_id)).scalar_one()
+                clean_entry.action = original_action
+                db.commit()
 
     def test_04_security_events_and_resolution(self):
         """Test listing security events and resolving open threats with officer notes."""

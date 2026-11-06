@@ -205,6 +205,136 @@ class AuthService:
         )
 
     @staticmethod
+    def logout_user(db: Session, current_user: User, token: Optional[str] = None, ip_address: Optional[str] = None) -> None:
+        """Record explicit user logout in immutable audit trail and blacklist token."""
+        if token:
+            from backend.app.core.security import revoke_token
+            revoke_token(db=db, token=token, user_id=current_user.id, reason="USER_LOGOUT")
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="USER_LOGOUT",
+            entity_type="USER",
+            entity_id=current_user.id,
+            user_id=current_user.id,
+            ip_address=ip_address,
+            details={"email": current_user.email},
+            commit=True,
+        )
+        logger.info(f"User {current_user.email} logged out successfully. Token revoked.")
+
+    @staticmethod
+    def list_users(
+        db: Session,
+        role_name: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        search_query: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> Tuple[List[User], int]:
+        """Administrative query to list registered users with role and status filters."""
+        from sqlalchemy import func
+        query = select(User)
+
+        if is_active is not None:
+            query = query.where(User.is_active == is_active)
+        if role_name:
+            query = query.where(User.roles.any(Role.name == role_name.upper()))
+        if search_query:
+            query = query.where(
+                User.email.ilike(f"%{search_query}%") | User.full_name.ilike(f"%{search_query}%")
+            )
+
+        total_count = db.execute(select(func.count()).select_from(query.subquery())).scalar_one()
+        users = list(
+            db.execute(query.order_by(User.created_at.desc()).offset(skip).limit(limit)).scalars().all()
+        )
+        return users, total_count
+
+    @staticmethod
+    def get_user_by_id(db: Session, user_id: str) -> User:
+        """Fetch user by primary key or raise EntityNotFoundException."""
+        user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+        if not user:
+            raise EntityNotFoundException("User", user_id)
+        return user
+
+    @staticmethod
+    def update_user_roles(
+        db: Session,
+        admin_user: User,
+        target_user_id: str,
+        role_names: List[str],
+        ip_address: Optional[str] = None,
+    ) -> User:
+        """Assign authorized roles to target user account with audit logging."""
+        target_user = AuthService.get_user_by_id(db, target_user_id)
+
+        # Retrieve requested roles
+        new_roles = []
+        for r_name in role_names:
+            role = db.execute(select(Role).where(Role.name == r_name.upper())).scalar_one_or_none()
+            if not role:
+                raise EntityNotFoundException("Role", r_name)
+            new_roles.append(role)
+
+        old_role_names = [r.name for r in target_user.roles]
+        target_user.roles = new_roles
+        target_user.updated_at = datetime.now(timezone.utc)
+
+        # Audit role update
+        SecurityAuditService.record_audit(
+            db=db,
+            action="USER_ROLES_UPDATED",
+            entity_type="USER",
+            entity_id=target_user.id,
+            user_id=admin_user.id,
+            ip_address=ip_address,
+            details={
+                "previous_roles": old_role_names,
+                "new_roles": [r.name for r in new_roles],
+                "updated_by": admin_user.email,
+            },
+            commit=True,
+        )
+        db.refresh(target_user)
+        logger.info(f"User {target_user.email} roles updated by {admin_user.email}: {[r.name for r in new_roles]}")
+        return target_user
+
+    @staticmethod
+    def update_user_status(
+        db: Session,
+        admin_user: User,
+        target_user_id: str,
+        is_active: bool,
+        ip_address: Optional[str] = None,
+    ) -> User:
+        """Activate or deactivate user account with audit logging."""
+        target_user = AuthService.get_user_by_id(db, target_user_id)
+        prev_status = target_user.is_active
+        target_user.is_active = is_active
+        target_user.updated_at = datetime.now(timezone.utc)
+
+        # Audit status modification
+        SecurityAuditService.record_audit(
+            db=db,
+            action="USER_STATUS_UPDATED",
+            entity_type="USER",
+            entity_id=target_user.id,
+            user_id=admin_user.id,
+            ip_address=ip_address,
+            details={
+                "previous_status": prev_status,
+                "new_status": is_active,
+                "modified_by": admin_user.email,
+            },
+            commit=True,
+        )
+        db.refresh(target_user)
+        logger.info(f"User {target_user.email} active status set to {is_active} by {admin_user.email}")
+        return target_user
+
+    @staticmethod
     def _record_security_event(
         db: Session,
         event_type: str,

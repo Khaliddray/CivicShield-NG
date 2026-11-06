@@ -1,7 +1,8 @@
 """Coordinated Narrative Detection and Threat Intelligence ORM Models."""
 
 from typing import List, Optional
-from sqlalchemy import String, Text, Float, ForeignKey, JSON
+from datetime import datetime
+from sqlalchemy import String, Text, Float, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.core.database import Base, TimestampMixin, UUIDMixin
 
@@ -17,7 +18,14 @@ class NarrativeCluster(Base, UUIDMixin, TimestampMixin):
     amplification_pattern: Mapped[str] = mapped_column(String(64), default="ORGANIC_SPREAD", nullable=False)
     geographic_scope: Mapped[Optional[dict]] = mapped_column(JSON, default=list, nullable=True)  # List of Nigerian states
 
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True, nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(32), default="UNVERIFIED", index=True, nullable=False)
+    first_reported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_reported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_analyst_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     # Relationships
+    assigned_analyst: Mapped[Optional["User"]] = relationship("User", foreign_keys=[assigned_analyst_id])
     cluster_reports: Mapped[List["NarrativeClusterReport"]] = relationship("NarrativeClusterReport", back_populates="cluster", cascade="all, delete-orphan", lazy="selectin")
     threat_indicators: Mapped[List["ThreatIndicator"]] = relationship("ThreatIndicator", back_populates="cluster", cascade="all, delete-orphan", lazy="selectin")
 

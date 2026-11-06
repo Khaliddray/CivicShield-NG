@@ -91,35 +91,42 @@ class ReportingService:
         )
         db.add(history)
 
-        # Process attached evidence files
+        # Process attached evidence files with chunked streaming (64KB buffer)
         if files:
             settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            CHUNK_SIZE = 64 * 1024
             for upload in files:
                 if not upload.filename:
                     continue
 
-                content = upload.file.read()
-                file_size = len(content)
-
-                if file_size > settings.MAX_UPLOAD_SIZE_BYTES:
-                    raise ValidationException(
-                        f"File '{upload.filename}' ({file_size / (1024*1024):.2f}MB) exceeds maximum allowed limit of {settings.MAX_UPLOAD_SIZE_BYTES / (1024*1024):.0f}MB."
-                    )
-
-                mime_type = upload.content_type or "application/octet-stream"
-                media_type = cls._detect_media_type(mime_type)
-
-                # Compute cryptographic SHA-256 hash of file content
-                sha256_hash = hashlib.sha256(content).hexdigest()
-
-                # Generate secure, randomized storage filename
                 extension = Path(upload.filename).suffix.lower() or ".bin"
                 safe_filename = f"{secrets.token_hex(16)}{extension}"
                 target_path = settings.UPLOAD_DIR / safe_filename
 
-                # Persist file securely
-                with open(target_path, "wb") as f:
-                    f.write(content)
+                hasher = hashlib.sha256()
+                file_size = 0
+
+                try:
+                    with open(target_path, "wb") as f:
+                        while True:
+                            chunk = upload.file.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            file_size += len(chunk)
+                            if file_size > settings.MAX_UPLOAD_SIZE_BYTES:
+                                raise ValidationException(
+                                    f"File '{upload.filename}' ({file_size / (1024*1024):.2f}MB) exceeds maximum allowed limit of {settings.MAX_UPLOAD_SIZE_BYTES / (1024*1024):.0f}MB."
+                                )
+                            hasher.update(chunk)
+                            f.write(chunk)
+                except Exception:
+                    if target_path.exists():
+                        target_path.unlink()
+                    raise
+
+                mime_type = upload.content_type or "application/octet-stream"
+                media_type = cls._detect_media_type(mime_type)
+                sha256_hash = hasher.hexdigest()
 
                 evidence = UploadedEvidence(
                     report_id=report.id,
@@ -247,7 +254,122 @@ class ReportingService:
             changed_by_user_id=changed_by_user_id,
         )
         db.add(history)
+
+        # Audit log entry
+        SecurityAuditService.record_audit(
+            db=db,
+            action="REPORT_STATUS_UPDATED",
+            entity_type="REPORT",
+            entity_id=report.id,
+            user_id=changed_by_user_id,
+            details={
+                "previous_status": old_status,
+                "new_status": new_status,
+                "notes": notes,
+            },
+            commit=False,
+        )
+
         db.commit()
         db.refresh(report)
         logger.info(f"Report {report.reference_number} transitioned from {old_status} to {new_status}")
+        return report
+
+    @staticmethod
+    def get_evidence(db: Session, evidence_id: str) -> UploadedEvidence:
+        """Retrieve evidence item by ID or raise EntityNotFoundException."""
+        evidence = db.execute(select(UploadedEvidence).where(UploadedEvidence.id == evidence_id)).scalar_one_or_none()
+        if not evidence:
+            raise EntityNotFoundException("UploadedEvidence", evidence_id)
+        return evidence
+
+    @staticmethod
+    def get_secure_file_path(evidence: UploadedEvidence) -> Path:
+        """Resolve file path securely, preventing path traversal attacks."""
+        resolved = Path(evidence.storage_path).resolve()
+        upload_root = settings.UPLOAD_DIR.resolve()
+
+        # Strict containment check preventing directory traversal
+        if not resolved.is_relative_to(upload_root):
+            raise ValidationException("Illegal file path access attempt detected. Security violation recorded.")
+
+        if not resolved.exists() or not resolved.is_file():
+            raise EntityNotFoundException("EvidenceFile", evidence.id)
+
+        return resolved
+
+    @staticmethod
+    def assign_analyst(
+        db: Session,
+        report_id: str,
+        analyst_id: str,
+        assigned_by_user_id: str,
+        notes: Optional[str] = None,
+    ) -> Report:
+        """Assign an institutional analyst to an incoming report."""
+        report = db.execute(select(Report).where(Report.id == report_id)).scalar_one_or_none()
+        if not report:
+            raise EntityNotFoundException("Report", report_id)
+
+        report.assigned_analyst_id = analyst_id
+        report.updated_at = datetime.now(timezone.utc)
+
+        history = ReportStatusHistory(
+            report_id=report.id,
+            previous_status=report.status,
+            new_status=report.status,
+            notes=f"Assigned to analyst {analyst_id[:8]}... Notes: {notes or 'No notes provided'}",
+            changed_by_user_id=assigned_by_user_id,
+        )
+        db.add(history)
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="REPORT_ANALYST_ASSIGNED",
+            entity_type="REPORT",
+            entity_id=report.id,
+            user_id=assigned_by_user_id,
+            details={"assigned_analyst_id": analyst_id, "notes": notes},
+            commit=True,
+        )
+        db.refresh(report)
+        logger.info(f"Report {report.reference_number} assigned to analyst {analyst_id}")
+        return report
+
+    @staticmethod
+    def withdraw_report(
+        db: Session,
+        report_id: str,
+        withdrawn_by_user_id: Optional[str],
+        reason: str,
+    ) -> Report:
+        """Withdraw a report from active investigation."""
+        report = db.execute(select(Report).where(Report.id == report_id)).scalar_one_or_none()
+        if not report:
+            raise EntityNotFoundException("Report", report_id)
+
+        old_status = report.status
+        report.status = "WITHDRAWN"
+        report.updated_at = datetime.now(timezone.utc)
+
+        history = ReportStatusHistory(
+            report_id=report.id,
+            previous_status=old_status,
+            new_status="WITHDRAWN",
+            notes=f"Report withdrawn: {reason}",
+            changed_by_user_id=withdrawn_by_user_id,
+        )
+        db.add(history)
+
+        SecurityAuditService.record_audit(
+            db=db,
+            action="REPORT_WITHDRAWN",
+            entity_type="REPORT",
+            entity_id=report.id,
+            user_id=withdrawn_by_user_id,
+            details={"reason": reason, "previous_status": old_status},
+            commit=True,
+        )
+        db.refresh(report)
+        logger.info(f"Report {report.reference_number} marked WITHDRAWN: {reason}")
         return report
