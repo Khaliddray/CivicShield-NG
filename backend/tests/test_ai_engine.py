@@ -191,6 +191,43 @@ class TestAIEngineModule(unittest.TestCase):
         # Reset back
         AIEngineService.set_provider(original_provider)
 
+    def test_08_multilingual_language_detection(self):
+        """Verify accurate detection of Nigerian Pidgin vs Standard English."""
+        # Pidgin text
+        pidgin_text = "Wetin dey happen for Ward 7? Dem say BVAS no dey work at all, wahala full ground!"
+        res_pidgin = self.client.post("/api/v1/ai/multilingual/detect", json={"text": pidgin_text})
+        self.assertEqual(res_pidgin.status_code, 200)
+        data_p = res_pidgin.json()["data"]
+        self.assertTrue(data_p["is_pidgin"])
+        self.assertEqual(data_p["detected_language"], "pcm")
+        self.assertGreaterEqual(len(data_p["matched_markers"]), 2)
+
+        # English text
+        english_text = "Official announcement from the Independent National Electoral Commission regarding collation."
+        res_eng = self.client.post("/api/v1/ai/multilingual/detect", json={"text": english_text})
+        self.assertEqual(res_eng.status_code, 200)
+        data_e = res_eng.json()["data"]
+        self.assertFalse(data_e["is_pidgin"])
+        self.assertEqual(data_e["detected_language"], "en")
+
+    def test_09_multilingual_translation_and_disclaimer(self):
+        """Verify translation between English and Pidgin with mandatory legal source disclaimer."""
+        # Pidgin to English
+        pidgin_text = "Dem don postpone voting for Kano and BVAS no dey work."
+        res_to_eng = self.client.post("/api/v1/ai/multilingual/translate-to-english", json={"text": pidgin_text})
+        self.assertEqual(res_to_eng.status_code, 200)
+        data_to_eng = res_to_eng.json()["data"]
+        self.assertIn("elections have been postponed", data_to_eng["translated_text"].lower())
+        self.assertIn("Official source is in English", data_to_eng["disclaimer"])
+
+        # English to Pidgin
+        official_text = "Elections have been postponed. Do not panic and remain calm."
+        res_to_pidgin = self.client.post("/api/v1/ai/multilingual/translate-to-pidgin", json={"text": official_text})
+        self.assertEqual(res_to_pidgin.status_code, 200)
+        data_to_pidgin = res_to_pidgin.json()["data"]
+        self.assertIn("make una no panic", data_to_pidgin["translated_text"].lower())
+        self.assertEqual(data_to_pidgin["disclaimer"], "Machine Translation (Nigerian Pidgin) — Official source is in English")
+
 
 if __name__ == "__main__":
     unittest.main()

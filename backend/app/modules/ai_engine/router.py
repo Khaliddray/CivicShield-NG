@@ -11,6 +11,16 @@ from backend.app.modules.auth.models import User
 from backend.app.modules.ai_engine.schemas import ClaimAnalysisRequest, ClaimAnalysisResponse
 from backend.app.modules.reporting.schemas import ClaimSummaryOut
 from backend.app.modules.ai_engine.service import AIEngineService
+from backend.app.modules.ai_engine.multilingual import (
+    MultilingualService,
+    LanguageDetectionResult,
+    TranslationResponse,
+)
+from pydantic import BaseModel, Field
+
+
+class TextPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=5000, description="Text for translation or language detection")
 
 router = APIRouter(prefix="/ai", tags=["AI Misinformation Intelligence"])
 
@@ -47,4 +57,46 @@ def trigger_report_analysis(
     return APIResponse(
         data=[ClaimSummaryOut.model_validate(c) for c in claims],
         message=f"Successfully extracted and evaluated {len(claims)} claim(s) for report.",
+    )
+
+
+@router.post(
+    "/multilingual/detect",
+    response_model=APIResponse[LanguageDetectionResult],
+    summary="Detect whether content is in standard English or Nigerian Pidgin (Accessibility)",
+)
+def detect_language(payload: TextPayload) -> APIResponse[LanguageDetectionResult]:
+    """Identify language markers and return classification with confidence score."""
+    result = MultilingualService.detect_language(payload.text)
+    return APIResponse(
+        data=result,
+        message=f"Detected language: {result.detected_language} (Pidgin: {result.is_pidgin})",
+    )
+
+
+@router.post(
+    "/multilingual/translate-to-english",
+    response_model=APIResponse[TranslationResponse],
+    summary="Translate Nigerian Pidgin citizen claim to standard English for verification",
+)
+def translate_to_english(payload: TextPayload) -> APIResponse[TranslationResponse]:
+    """Translate Pidgin narrative to English with official source disclaimer."""
+    result = MultilingualService.translate_to_english(payload.text)
+    return APIResponse(
+        data=result,
+        message="Translation to English completed.",
+    )
+
+
+@router.post(
+    "/multilingual/translate-to-pidgin",
+    response_model=APIResponse[TranslationResponse],
+    summary="Translate official English advisory/debunk into Nigerian Pidgin",
+)
+def translate_to_pidgin(payload: TextPayload) -> APIResponse[TranslationResponse]:
+    """Translate official notice into Nigerian Pidgin for accessible dissemination."""
+    result = MultilingualService.translate_to_pidgin(payload.text)
+    return APIResponse(
+        data=result,
+        message="Translation to Nigerian Pidgin completed.",
     )
