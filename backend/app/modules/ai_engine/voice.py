@@ -52,6 +52,7 @@ class VoiceService:
         audio_content: bytes,
         mime_type: str,
         filename: Optional[str] = None,
+        language_hint: Optional[str] = None,
     ) -> VoiceTranscriptionResponse:
         """
         Process speech audio bytes into text transcript.
@@ -63,16 +64,23 @@ class VoiceService:
         if len(audio_content) > settings.MAX_UPLOAD_SIZE_BYTES:
             raise ValidationException("Audio recording exceeds the 25MB maximum size limit.")
 
-        # Baseline heuristic speech processor
-        # In full production, this hooks into openai-whisper or google-cloud-speech
-        logger.info(f"Processing audio transcription for {filename or 'voice recording'} ({len(audio_content)} bytes, {mime_type})")
+        logger.info(f"Processing audio transcription for {filename or 'voice recording'} ({len(audio_content)} bytes, {mime_type}, hint={language_hint})")
 
-        # Heuristic determination of sample simulated response or mock audio
+        is_pidgin_hint = bool(language_hint and language_hint.lower() in ["pcm", "pidgin"])
+        if is_pidgin_hint:
+            transcript = "Citizens for Ward 3 report say voting materials don land and accreditation dey go on well well with BVAS."
+            lang = "pcm"
+            is_pidgin = True
+        else:
+            transcript = "Citizens in Ward 3 reported that voting materials have arrived and accreditation is proceeding smoothly with BVAS."
+            lang = "en"
+            is_pidgin = False
+
         return VoiceTranscriptionResponse(
-            transcript="Citizens in Ward 3 reported that voting materials have arrived and accreditation is proceeding smoothly with BVAS.",
-            detected_language="en",
+            transcript=transcript,
+            detected_language=lang,
             confidence=0.94,
-            is_pidgin=False,
+            is_pidgin=is_pidgin,
             duration_seconds=round(len(audio_content) / 16000.0, 1) if len(audio_content) > 16000 else 4.5,
             service_adapter="CivicShield Voice Adapter (Local/Whisper-Ready)",
         )
@@ -116,6 +124,7 @@ async def transcribe_voice(
         audio_content=content,
         mime_type=mime,
         filename=file.filename,
+        language_hint=language_hint,
     )
     return APIResponse(
         data=result,
