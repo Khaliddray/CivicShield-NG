@@ -125,6 +125,72 @@ class TestAIEngineModule(unittest.TestCase):
         self.assertGreaterEqual(len(claims), 1)
         self.assertEqual(claims[0]["requires_human_review"], True)
 
+    def test_05_gemini_provider_fallback_when_unconfigured(self):
+        """Verify that GeminiAIProvider delegates cleanly to LocalHeuristicAIProvider when unconfigured."""
+        from backend.app.modules.ai_engine.providers.gemini import GeminiAIProvider
+        provider = GeminiAIProvider(api_key=None)
+        self.assertFalse(provider.is_configured)
+
+        # Extraction fallback
+        claims = provider.extract_atomic_claims("Voting has been postponed in Ward 5 due to logistics.")
+        self.assertGreaterEqual(len(claims), 1)
+
+        # Category fallback
+        cat = provider.classify_electoral_category("Thugs attacked the polling unit.")
+        self.assertEqual(cat["category"], ClaimCategory.VOTER_SUPPRESSION.value)
+
+        # Similarity fallback
+        sim = provider.calculate_similarity("Voting in Kano", "Voting in Kano State")
+        self.assertGreater(sim, 0.4)
+
+    def test_06_gemini_provider_mocked_success(self):
+        """Verify GeminiAIProvider handling when Gemini returns valid structured JSON."""
+        from unittest.mock import patch
+        from backend.app.modules.ai_engine.providers.gemini import GeminiAIProvider
+
+        mock_payload = {
+            "extracted_claim": "Elections postponed across Kano State.",
+            "category": "INEC_OPERATIONS",
+            "category_confidence": 0.95,
+            "ai_confidence_score": 0.88,
+            "ai_suggested_status": "UNDER_REVIEW",
+            "analysis_summary": "Claim contradicts official INEC gazette indicating normal schedules.",
+            "contradiction_suspected": True,
+            "top_matching_document_code": self.doc_code,
+            "recommended_next_action": "Urgent human verification required.",
+        }
+
+        provider = GeminiAIProvider(api_key="mock_valid_key_12345")
+        with patch.object(provider, "_call_gemini_json", return_value=mock_payload):
+            sources = [
+                {
+                    "document_code": self.doc_code,
+                    "title": "Clarification on Voting Schedules in Ward 3",
+                    "content_text": self.content,
+                    "issuing_institution": "Independent National Electoral Commission",
+                }
+            ]
+            eval_res = provider.evaluate_claim_against_sources("Voting is cancelled in Ward 3", sources)
+            self.assertEqual(eval_res["ai_suggested_status"], VerificationDecision.UNDER_REVIEW.value)
+            self.assertTrue(eval_res["contradiction_suspected"])
+            self.assertTrue(eval_res["requires_human_review"])
+            self.assertEqual(eval_res["category"], "INEC_OPERATIONS")
+
+    def test_07_provider_factory_and_custom_override(self):
+        """Verify dynamic AI Provider factory and runtime override."""
+        from backend.app.modules.ai_engine.service import AIEngineService
+        from backend.app.modules.ai_engine.providers.local_heuristic import LocalHeuristicAIProvider
+
+        original_provider = AIEngineService.get_provider()
+        self.assertIsNotNone(original_provider)
+
+        test_provider = LocalHeuristicAIProvider()
+        AIEngineService.set_provider(test_provider)
+        self.assertIs(AIEngineService.get_provider(), test_provider)
+
+        # Reset back
+        AIEngineService.set_provider(original_provider)
+
 
 if __name__ == "__main__":
     unittest.main()

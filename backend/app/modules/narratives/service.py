@@ -55,8 +55,8 @@ class NarrativesService:
                 rep_b = reports[j]
 
                 # 1. Check text similarity
-                text_a = f"{rep_a.title} {rep_a.content_text}"
-                text_b = f"{rep_b.title} {rep_b.content_text}"
+                text_a = f"{rep_a.title or ''} {rep_a.content_text or ''}".strip()
+                text_b = f"{rep_b.title or ''} {rep_b.content_text or ''}".strip()
                 sim = provider.calculate_similarity(text_a, text_b)
 
                 # 2. Check identical media fingerprints

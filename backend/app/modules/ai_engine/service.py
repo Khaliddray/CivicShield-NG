@@ -10,6 +10,7 @@ from backend.app.core.exceptions import EntityNotFoundException
 from backend.app.modules.ai_engine.prompt_defense import PromptDefense
 from backend.app.modules.ai_engine.providers.base import BaseAIProvider
 from backend.app.modules.ai_engine.providers.local_heuristic import LocalHeuristicAIProvider
+from backend.app.modules.ai_engine.providers.gemini import GeminiAIProvider
 from backend.app.modules.ai_engine.schemas import ClaimAnalysisRequest, ClaimAnalysisResponse, OfficialSourceMatchOut
 from backend.app.modules.registry.models import OfficialDocument
 from backend.app.modules.reporting.models import Report
@@ -20,12 +21,30 @@ from backend.app.common.enums import ReportStatus
 class AIEngineService:
     """Orchestrates defensive input sanitization, claim extraction, and official source correlation."""
 
-    _provider: BaseAIProvider = LocalHeuristicAIProvider()
+    _provider: Optional[BaseAIProvider] = None
+
+    @classmethod
+    def _create_provider(cls) -> BaseAIProvider:
+        """Create and configure active AI provider based on application configuration."""
+        if settings.AI_PROVIDER_TYPE == "gemini" or (settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip()):
+            logger.info("Initializing Gemini Cloud AI Provider with Local Heuristic fallback.")
+            return GeminiAIProvider(
+                api_key=settings.GEMINI_API_KEY,
+                fallback_provider=LocalHeuristicAIProvider(),
+            )
+        return LocalHeuristicAIProvider()
 
     @classmethod
     def get_provider(cls) -> BaseAIProvider:
         """Retrieve active AI Provider."""
+        if cls._provider is None:
+            cls._provider = cls._create_provider()
         return cls._provider
+
+    @classmethod
+    def set_provider(cls, provider: Optional[BaseAIProvider]) -> None:
+        """Explicitly override AI Provider (for testing or runtime switching)."""
+        cls._provider = provider
 
     @classmethod
     def analyze_claim_text(

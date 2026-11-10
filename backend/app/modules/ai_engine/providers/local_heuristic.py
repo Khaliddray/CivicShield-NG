@@ -39,6 +39,27 @@ CONTRADICTION_PAIRS = [
 ]
 
 
+SYNONYM_GROUPS = [
+    {"postpone", "postponed", "postponement", "postponing", "moved", "delay", "delayed", "rescheduled", "halted", "cancelled", "cancel"},
+    {"vote", "voting", "voter", "voters", "election", "elections", "electoral", "polls", "polling", "ballot", "ballots"},
+    {"circular", "circulars", "circulating", "circulated", "notice", "announcement", "rumor", "rumors", "statement"},
+    {"bvas", "machine", "machines", "accreditation"},
+]
+
+
+def _normalize_token(w: str) -> str:
+    """Normalize word using domain synonym canonicalization and rule-based stemming."""
+    w = w.lower()
+    for grp in SYNONYM_GROUPS:
+        if w in grp:
+            return sorted(list(grp))[0]
+    for suffix in ("ment", "tion", "ing", "ed", "es", "s"):
+        if len(w) > len(suffix) + 3 and w.endswith(suffix):
+            w = w[:-len(suffix)]
+            break
+    return w
+
+
 class LocalHeuristicAIProvider(BaseAIProvider):
     """Reliable, fast heuristic NLP processor requiring no external GPU or cloud API keys."""
 
@@ -92,29 +113,32 @@ class LocalHeuristicAIProvider(BaseAIProvider):
         }
 
     def calculate_similarity(self, text_a: str, text_b: str) -> float:
-        """Compute stop-word filtered Jaccard token similarity with bigram reinforcement."""
+        """Compute semantic token similarity with synonym groups, stemming, and bigrams."""
         if not text_a or not text_b:
             return 0.0
 
-        words_a = {w for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_a.lower()) if w not in STOP_WORDS}
-        words_b = {w for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_b.lower()) if w not in STOP_WORDS}
+        raw_a = [w for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_a.lower()) if w not in STOP_WORDS]
+        raw_b = [w for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_b.lower()) if w not in STOP_WORDS]
 
-        if not words_a or not words_b:
+        if not raw_a or not raw_b:
             return 0.0
 
-        jaccard = len(words_a.intersection(words_b)) / len(words_a.union(words_b))
+        stems_a = {_normalize_token(w) for w in raw_a}
+        stems_b = {_normalize_token(w) for w in raw_b}
 
-        # Bigram overlap
-        def make_bigrams(words: Set[str]) -> Set[str]:
-            sorted_w = sorted(list(words))
-            return {f"{sorted_w[i]}_{sorted_w[i+1]}" for i in range(len(sorted_w)-1)}
+        token_jaccard = len(stems_a.intersection(stems_b)) / len(stems_a.union(stems_b))
 
-        bi_a = make_bigrams(words_a)
-        bi_b = make_bigrams(words_b)
-        bigram_overlap = len(bi_a.intersection(bi_b)) / len(bi_a.union(bi_b)) if (bi_a and bi_b) else 0.0
+        # Bigram overlap from actual word sequence
+        bi_a = {f"{raw_a[i]}_{raw_a[i+1]}" for i in range(len(raw_a) - 1)}
+        bi_b = {f"{raw_b[i]}_{raw_b[i+1]}" for i in range(len(raw_b) - 1)}
+        bi_overlap = len(bi_a.intersection(bi_b)) / len(bi_a.union(bi_b)) if (bi_a and bi_b) else 0.0
 
-        combined = (jaccard * 0.75) + (bigram_overlap * 0.25)
-        return round(min(combined * 1.5, 1.0), 3)
+        inter = stems_a.intersection(stems_b)
+        score = (token_jaccard * 0.70) + (bi_overlap * 0.30)
+        if len(inter) >= 2:
+            score = max(score, min(0.20 + (len(inter) * 0.10), 0.90))
+
+        return round(min(score, 1.0), 3)
 
     def evaluate_claim_against_sources(
         self,
