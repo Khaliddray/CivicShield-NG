@@ -1,11 +1,11 @@
 """Abstract Base Class for AI Misinformation Intelligence Providers."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class BaseAIProvider(ABC):
-    """Modular AI Provider Interface enabling pluggable Local and Cloud-backed models."""
+    """Modular AI Provider Interface enabling pluggable Local, Development, and Cloud-backed models."""
 
     @abstractmethod
     def extract_atomic_claims(self, text: str) -> List[str]:
@@ -33,3 +33,10 @@ class BaseAIProvider(ABC):
         Returns structured analysis adhering to responsible AI invariants.
         """
         pass
+
+    def extract_claims_structured(self, text: str, context_state: Optional[str] = None) -> Dict[str, Any]:
+        """Extract claims with structured entities and types."""
+        return {
+            "original_text": text,
+            "claims": [{"claim_text": c, "entities": [], "claim_type": "GENERAL_CIVIC_CLAIM", "requires_verification": True} for c in self.extract_atomic_claims(text)]
+        }

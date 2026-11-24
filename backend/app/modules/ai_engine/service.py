@@ -1,31 +1,109 @@
-"""AI Misinformation Intelligence Orchestrator Service."""
+"""AI Misinformation Intelligence Orchestrator Service (Member 2).
 
-from typing import List, Optional
-from sqlalchemy import select
+Orchestrates:
+- Defensive prompt sanitization (PromptDefense)
+- Discrete claim and entity extraction (ClaimExtractionEngine)
+- Official source retrieval and grounding (EvidenceRetrievalEngine)
+- Electoral information classification (ElectoralInformationClassifier)
+- Multi-tier semantic similarity detection (SimilarityEngine)
+- Multilingual dialect processing and translation (MultilingualEngine)
+- Accessibility voice transcription integration (SpeechTranscriptionService)
+- Responsible AI guardrail enforcement (ResponsibleAISafetyEngine)
+"""
+
+from typing import List, Optional, Dict, Any, Union
+from datetime import datetime, timezone
+from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
-from backend.app.core.exceptions import EntityNotFoundException
+from backend.app.core.exceptions import EntityNotFoundException, ValidationException
 from backend.app.modules.ai_engine.prompt_defense import PromptDefense
+from backend.app.modules.ai_engine.claim_extractor import ClaimExtractionEngine
+from backend.app.modules.ai_engine.similarity import SimilarityEngine
+from backend.app.modules.ai_engine.evidence_retrieval import EvidenceRetrievalEngine
+from backend.app.modules.ai_engine.classifier import ElectoralInformationClassifier
+from backend.app.modules.ai_engine.multilingual import MultilingualEngine
+from backend.app.modules.ai_engine.speech import SpeechTranscriptionService
+from backend.app.modules.ai_engine.safety import ResponsibleAISafetyEngine
 from backend.app.modules.ai_engine.providers.base import BaseAIProvider
-from backend.app.modules.ai_engine.providers.local_heuristic import LocalHeuristicAIProvider
-from backend.app.modules.ai_engine.schemas import ClaimAnalysisRequest, ClaimAnalysisResponse, OfficialSourceMatchOut
-from backend.app.modules.registry.models import OfficialDocument
-from backend.app.modules.reporting.models import Report
+from backend.app.modules.ai_engine.providers.factory import get_ai_provider
+from backend.app.modules.ai_engine.schemas import (
+    ClaimAnalysisRequest,
+    ClaimAnalysisResponse,
+    OfficialSourceMatchOut,
+    EvidenceItemOut,
+    StructuredAIAssessment,
+    ClaimExtractionResponse,
+    SimilarityDetectionResponse,
+    SimilarReportMatch,
+)
+from backend.app.modules.registry.models import OfficialDocument, TrustedSource
+from backend.app.modules.reporting.models import Report, UploadedEvidence
 from backend.app.modules.verification.models import Claim
-from backend.app.common.enums import ReportStatus
+from backend.app.common.enums import ReportStatus, VerificationDecision
 
 
 class AIEngineService:
     """Orchestrates defensive input sanitization, claim extraction, and official source correlation."""
 
-    _provider: BaseAIProvider = LocalHeuristicAIProvider()
+    _provider: Optional[BaseAIProvider] = None
 
     @classmethod
     def get_provider(cls) -> BaseAIProvider:
-        """Retrieve active AI Provider."""
+        """Retrieve active AI Provider according to configuration."""
+        if cls._provider is None:
+            cls._provider = get_ai_provider()
         return cls._provider
+
+    @classmethod
+    def set_provider(cls, provider: BaseAIProvider) -> None:
+        """Explicitly override AI provider (primarily for isolated test harnesses)."""
+        cls._provider = provider
+
+    # ---------------------------------------------------------
+    # 1. Claim Extraction Service (Section 3)
+    # ---------------------------------------------------------
+
+    @classmethod
+    def extract_claims(
+        cls,
+        text: str,
+        context_state: Optional[str] = None,
+    ) -> ClaimExtractionResponse:
+        """
+        Extract discrete factual claims and electoral entities from text.
+        Handles Nigerian Pidgin normalization and preserves original text.
+        """
+        # 1. Defensively sanitize against adversarial prompts
+        sanitized_text, injection_detected, _ = PromptDefense.sanitize_input(text)
+
+        # 2. Check language
+        lang_res = MultilingualEngine.detect_language(sanitized_text)
+
+        # If Pidgin, translate to English for entity and assertion extraction while preserving original
+        process_text = sanitized_text
+        is_translated = False
+        if lang_res.detected_language == "pcm":
+            trans_res = MultilingualEngine.translate_pidgin_to_english(sanitized_text)
+            process_text = trans_res.translated_text
+            is_translated = True
+
+        extraction_result = ClaimExtractionEngine.extract_claims(
+            text=process_text,
+            context_state=context_state,
+        )
+
+        extraction_result.original_text = text
+        extraction_result.detected_language = lang_res.detected_language
+        extraction_result.is_translated = is_translated
+
+        return extraction_result
+
+    # ---------------------------------------------------------
+    # 2. Complete Claim Analysis Pipeline (Section 4, 5, 6)
+    # ---------------------------------------------------------
 
     @classmethod
     def analyze_claim_text(
@@ -50,6 +128,8 @@ class AIEngineService:
                 "summary": doc.summary,
                 "content_text": doc.content_text,
                 "issuing_institution": doc.issuing_institution,
+                "source_url": doc.source_url,
+                "publication_date": doc.publication_date.isoformat() if doc.publication_date else None,
             }
             for doc in official_docs
         ]
@@ -61,32 +141,55 @@ class AIEngineService:
                 official_sources=reference_data,
             )
 
-            consulted_models = [OfficialSourceMatchOut(**s) for s in assessment.get("sources_consulted", [])]
-            sources_list = [f"{s.issuing_institution or 'INEC'}: {s.title or s.document_code}" for s in consulted_models]
-            evidence_list = [s.title for s in consulted_models if s.title]
+            # Build source list and models
+            consulted_models: List[OfficialSourceMatchOut] = []
+            for s in assessment.get("sources_consulted", []):
+                if isinstance(s, dict):
+                    consulted_models.append(OfficialSourceMatchOut(**s))
+                elif isinstance(s, OfficialSourceMatchOut):
+                    consulted_models.append(s)
+
+            sources_list = [
+                f"{s.issuing_institution or 'INEC'}: {s.title or s.document_code}"
+                for s in consulted_models
+            ]
+
+            # Build evidence list
+            raw_evidence = assessment.get("evidence", [])
+            evidence_out_list: List[Union[str, EvidenceItemOut]] = []
+            for ev in raw_evidence:
+                if isinstance(ev, dict):
+                    evidence_out_list.append(EvidenceItemOut(**ev))
+                elif isinstance(ev, str):
+                    evidence_out_list.append(ev)
+
+            if not evidence_out_list:
+                evidence_out_list = [s.title for s in consulted_models if s.title]
 
             return ClaimAnalysisResponse(
-                extracted_claim=assessment["extracted_claim"],
-                category=assessment["category"],
-                category_confidence=assessment["category_confidence"],
-                ai_confidence_score=assessment["ai_confidence_score"],
-                ai_suggested_status=assessment["ai_suggested_status"],
-                analysis_summary=assessment["analysis_summary"],
-                contradiction_suspected=assessment["contradiction_suspected"],
+                extracted_claim=assessment.get("extracted_claim", sanitized_text),
+                category=assessment.get("category", "GENERAL_ELECTORAL"),
+                category_confidence=assessment.get("category_confidence", 0.8),
+                ai_confidence_score=assessment.get("ai_confidence_score", 0.0),
+                ai_suggested_status=assessment.get("ai_suggested_status", "UNVERIFIED"),
+                analysis_summary=assessment.get("analysis_summary", "Claim evaluated against official registry."),
+                contradiction_suspected=assessment.get("contradiction_suspected", False),
                 sources_consulted=consulted_models,
-                recommended_next_action=assessment["recommended_next_action"],
+                recommended_next_action=assessment.get(
+                    "recommended_next_action", "Assign to Verification Officer for review."
+                ),
                 requires_human_review=True,  # Non-negotiable responsible AI rule
                 adversarial_injection_detected=injection_detected,
                 # Structured contract fields
-                claim=assessment["extracted_claim"],
-                classification=assessment["ai_suggested_status"],
-                confidence=assessment["ai_confidence_score"],
-                evidence=evidence_list,
+                claim=assessment.get("extracted_claim", sanitized_text),
+                classification=assessment.get("classification") or assessment.get("ai_suggested_status"),
+                confidence=assessment.get("ai_confidence_score", 0.0),
+                evidence=evidence_out_list,
                 sources=sources_list,
-                limitations=[
+                limitations=assessment.get("limitations", [
                     "Automated analysis is heuristic and non-binding.",
                     "Grounding restricted to certified gazettes in local registry.",
-                ],
+                ]),
                 service_available=True,
             )
         except Exception as exc:
@@ -114,6 +217,54 @@ class AIEngineService:
                 error_message=str(exc),
             )
 
+    # ---------------------------------------------------------
+    # 3. Standard Structured AI Assessment Contract (Section 6)
+    # ---------------------------------------------------------
+
+    @classmethod
+    def generate_structured_assessment(
+        cls,
+        db: Session,
+        claim_text: str,
+        context_state: Optional[str] = None,
+    ) -> StructuredAIAssessment:
+        """Generate structured AI assessment conforming to Member 1 backend contract."""
+        analysis = cls.analyze_claim_text(
+            db=db,
+            request=ClaimAnalysisRequest(claim_text=claim_text, context_state=context_state),
+        )
+
+        structured_evidence: List[EvidenceItemOut] = []
+        for ev in analysis.evidence:
+            if isinstance(ev, EvidenceItemOut):
+                structured_evidence.append(ev)
+            elif isinstance(ev, dict):
+                structured_evidence.append(EvidenceItemOut(**ev))
+            elif isinstance(ev, str):
+                structured_evidence.append(
+                    EvidenceItemOut(
+                        description=ev,
+                        source_name="Official Gazette Registry",
+                        retrieved_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                )
+
+        return StructuredAIAssessment(
+            claim=analysis.extracted_claim,
+            classification=analysis.classification or "INSUFFICIENT_EVIDENCE",
+            confidence=analysis.confidence or 0.0,
+            evidence=structured_evidence,
+            sources=analysis.sources,
+            limitations=analysis.limitations,
+            requires_human_review=True,
+            service_available=analysis.service_available,
+            reasoning=analysis.analysis_summary,
+        )
+
+    # ---------------------------------------------------------
+    # 4. Report Claims Extraction & Ingestion Pipeline (Member 1 Integration)
+    # ---------------------------------------------------------
+
     @classmethod
     def process_report_claims(cls, db: Session, report_id: str) -> List[Claim]:
         """Extract atomic claims from a citizen report, evaluate each against the registry, and persist."""
@@ -136,7 +287,10 @@ class AIEngineService:
                 "document_code": doc.document_code,
                 "title": doc.title,
                 "content_text": doc.content_text,
+                "summary": doc.summary,
                 "issuing_institution": doc.issuing_institution,
+                "source_url": doc.source_url,
+                "publication_date": doc.publication_date.isoformat() if doc.publication_date else None,
             }
             for doc in official_docs
         ]
@@ -180,3 +334,76 @@ class AIEngineService:
 
         logger.info(f"Report {report.reference_number}: extracted and analyzed {len(persisted_claims)} atomic claims.")
         return persisted_claims
+
+    # ---------------------------------------------------------
+    # 5. Similarity Detection Service (Section 7)
+    # ---------------------------------------------------------
+
+    @classmethod
+    def detect_similar_reports(
+        cls,
+        db: Session,
+        target_text: str,
+        target_report_id: Optional[str] = None,
+        candidate_reports: Optional[List[Dict[str, Any]]] = None,
+        threshold: float = 0.70,
+    ) -> SimilarityDetectionResponse:
+        """
+        Compare report or claim text against recent reports in the database or candidate list.
+        Returns candidate matches with exact algorithmically derived similarity scores.
+        """
+        candidates: List[Dict[str, Any]] = []
+
+        if candidate_reports is not None:
+            candidates = candidate_reports
+        else:
+            # Query recent 100 reports from DB
+            recent_reps = list(
+                db.execute(select(Report).order_by(desc(Report.created_at)).limit(100)).scalars().all()
+            )
+            candidates = [
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "content_text": r.content_text,
+                    "text": f"{r.title} {r.content_text}",
+                }
+                for r in recent_reps
+            ]
+
+        return SimilarityEngine.find_similar_reports(
+            target_text=target_text,
+            candidate_reports=candidates,
+            target_report_id=target_report_id,
+            threshold=threshold,
+        )
+
+    # ---------------------------------------------------------
+    # 6. Multilingual Processing Service (Section 9)
+    # ---------------------------------------------------------
+
+    @classmethod
+    def process_multilingual_text(cls, text: str) -> Dict[str, Any]:
+        """Detect language, normalize, and provide English and Nigerian Pidgin translations."""
+        det = MultilingualEngine.detect_language(text)
+
+        if det.detected_language == "pcm":
+            trans = MultilingualEngine.translate_pidgin_to_english(text)
+            return {
+                "detected_language": det.detected_language,
+                "language_name": det.language_name,
+                "confidence": det.confidence,
+                "original_text": text,
+                "english_translation": trans.translated_text,
+                "translation_label": trans.translation_label,
+            }
+        else:
+            trans_pidgin = MultilingualEngine.translate_english_to_pidgin(text)
+            return {
+                "detected_language": det.detected_language,
+                "language_name": det.language_name,
+                "confidence": det.confidence,
+                "original_text": text,
+                "pidgin_translation": trans_pidgin.translated_text,
+                "translation_label": trans_pidgin.translation_label,
+            }

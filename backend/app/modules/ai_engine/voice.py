@@ -9,6 +9,7 @@ from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.core.exceptions import ValidationException
 from backend.app.common.schemas import APIResponse
+from backend.app.modules.ai_engine.speech import SpeechTranscriptionService
 
 router = APIRouter(prefix="/voice", tags=["Accessibility & Voice I/O"])
 
@@ -22,6 +23,9 @@ class VoiceTranscriptionResponse(BaseModel):
     is_pidgin: bool = False
     duration_seconds: Optional[float] = None
     service_adapter: str = "CivicShield Voice Adapter (Local/Whisper-Ready)"
+    report_id: Optional[str] = None
+    evidence_id: Optional[str] = None
+    is_uncertain: bool = False
 
 
 class SpeechSynthesisRequest(BaseModel):
@@ -52,29 +56,32 @@ class VoiceService:
         audio_content: bytes,
         mime_type: str,
         filename: Optional[str] = None,
+        language_hint: Optional[str] = None,
+        report_id: Optional[str] = None,
+        evidence_id: Optional[str] = None,
     ) -> VoiceTranscriptionResponse:
         """
-        Process speech audio bytes into text transcript.
-        Designed as an extensible adapter ready for Member 2's Whisper or cloud speech model.
+        Process speech audio bytes into text transcript using the modular SpeechTranscriptionService.
         """
-        if len(audio_content) == 0:
-            raise ValidationException("Audio file is empty. Please provide a valid voice recording.")
+        result = SpeechTranscriptionService.transcribe(
+            audio_bytes=audio_content,
+            mime_type=mime_type,
+            language_hint=language_hint,
+            report_id=report_id,
+            evidence_id=evidence_id,
+            filename=filename,
+        )
 
-        if len(audio_content) > settings.MAX_UPLOAD_SIZE_BYTES:
-            raise ValidationException("Audio recording exceeds the 25MB maximum size limit.")
-
-        # Baseline heuristic speech processor
-        # In full production, this hooks into openai-whisper or google-cloud-speech
-        logger.info(f"Processing audio transcription for {filename or 'voice recording'} ({len(audio_content)} bytes, {mime_type})")
-
-        # Heuristic determination of sample simulated response or mock audio
         return VoiceTranscriptionResponse(
-            transcript="Citizens in Ward 3 reported that voting materials have arrived and accreditation is proceeding smoothly with BVAS.",
-            detected_language="en",
-            confidence=0.94,
-            is_pidgin=False,
-            duration_seconds=round(len(audio_content) / 16000.0, 1) if len(audio_content) > 16000 else 4.5,
-            service_adapter="CivicShield Voice Adapter (Local/Whisper-Ready)",
+            transcript=result["transcript"],
+            detected_language=result["detected_language"],
+            confidence=result["confidence"],
+            is_pidgin=result.get("is_pidgin", False),
+            duration_seconds=result.get("duration_seconds", 4.5),
+            service_adapter=result.get("service_adapter", "CivicShield Voice Adapter (Local/Whisper-Ready)"),
+            report_id=result.get("report_id"),
+            evidence_id=result.get("evidence_id"),
+            is_uncertain=result.get("is_uncertain", False),
         )
 
     @classmethod
@@ -104,18 +111,20 @@ class VoiceService:
 async def transcribe_voice(
     file: UploadFile = File(..., description="Audio file recording (wav, mp3, ogg, webm, m4a)"),
     language_hint: Optional[str] = Form(None, description="Optional language hint: en, pcm"),
+    report_id: Optional[str] = Form(None, description="Optional associated report ID for traceability"),
+    evidence_id: Optional[str] = Form(None, description="Optional associated evidence record ID"),
 ) -> APIResponse[VoiceTranscriptionResponse]:
     """Accessible citizen reporting endpoint converting spoken electoral complaints to text."""
     mime = file.content_type or "audio/wav"
-    allowed_types = settings.ALLOWED_AUDIO_TYPES + ["audio/webm", "audio/ogg", "audio/mp4", "audio/m4a"]
-    if mime not in allowed_types and not mime.startswith("audio/"):
-        raise ValidationException(f"Unsupported audio format '{mime}'. Supported formats: wav, mp3, ogg, webm, m4a.")
 
     content = await file.read()
     result = VoiceService.transcribe_audio(
         audio_content=content,
         mime_type=mime,
         filename=file.filename,
+        language_hint=language_hint,
+        report_id=report_id,
+        evidence_id=evidence_id,
     )
     return APIResponse(
         data=result,
