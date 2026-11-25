@@ -91,13 +91,25 @@ class LocalHeuristicAIProvider(BaseAIProvider):
             "matched_keywords": matched_keywords,
         }
 
+    def _normalize_token(self, token: str) -> str:
+        """Apply light stemming and electoral synonym normalization."""
+        synonyms = {
+            "postponed": "postpone", "postponement": "postpone", "postponing": "postpone", "moved": "postpone",
+            "delayed": "delay", "delays": "delay", "delaying": "delay",
+            "voting": "vote", "elections": "vote", "election": "vote", "polls": "vote", "polling": "vote", "voters": "vote",
+            "circular": "notice", "circulars": "notice", "announcement": "notice", "announcements": "notice",
+        }
+        w = synonyms.get(token, token)
+        w = re.sub(r"(ing|ment|tion|ted|ed|es|s)$", "", w)
+        return synonyms.get(w, w)
+
     def calculate_similarity(self, text_a: str, text_b: str) -> float:
         """Compute stop-word filtered Jaccard token similarity with bigram reinforcement."""
         if not text_a or not text_b:
             return 0.0
 
-        words_a = {w for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_a.lower()) if w not in STOP_WORDS}
-        words_b = {w for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_b.lower()) if w not in STOP_WORDS}
+        words_a = {self._normalize_token(w) for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_a.lower()) if w not in STOP_WORDS}
+        words_b = {self._normalize_token(w) for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", text_b.lower()) if w not in STOP_WORDS}
 
         if not words_a or not words_b:
             return 0.0

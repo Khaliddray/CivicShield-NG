@@ -4,9 +4,61 @@
 
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-900;
+    @apply bg-slate-950 text-slate-100;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
+
+  /* Accessibility Focus Rings */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-950;
+  }
+
+  button, a, input, select, textarea {
+    @apply min-h-[40px];
+  }
+}
+
+/* Font Size Scaling */
+html.text-size-sm {
+  font-size: 14px;
+}
+
+html.text-size-md {
+  font-size: 16px;
+}
+
+html.text-size-lg {
+  font-size: 18px;
+}
+
+html.text-size-xl {
+  font-size: 20px;
+}
+
+/* High Contrast Mode */
+html.high-contrast {
+  filter: contrast(115%);
+}
+
+html.high-contrast body {
+  background-color: #000000 !important;
+  color: #ffffff !important;
+}
+
+html.high-contrast .bg-slate-900,
+html.high-contrast .bg-slate-950 {
+  background-color: #050505 !important;
+  border-color: #ffffff !important;
+}
+
+html.high-contrast .border-slate-800,
+html.high-contrast .border-slate-700 {
+  border-color: #facc15 !important;
+}
+
+html.high-contrast *:focus-visible {
+  outline: 3px solid #facc15 !important;
+  outline-offset: 2px !important;
 }
 
 /* Custom scrollbar */
@@ -15,12 +67,12 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: #0f172a;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #334155;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #475569;
 }

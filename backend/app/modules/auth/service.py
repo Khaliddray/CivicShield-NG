@@ -1,7 +1,7 @@
 """Authentication business logic service."""
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List, Tuple
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
