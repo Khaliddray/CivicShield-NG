@@ -114,8 +114,8 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onViewChange, onOpe
 
       {/* Main Header / Navigation */}
       <header className="sticky top-0 z-40 bg-slate-950/95 backdrop-blur border-b border-slate-800 text-white shadow-xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
+        <div className="max-w-7xl mx-auto px-2 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16 gap-1 sm:gap-3">
             {/* Logo & Platform Identity */}
             <div
               className="flex items-center space-x-3 cursor-pointer"
@@ -128,7 +128,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onViewChange, onOpe
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center shadow-lg shadow-emerald-950/60 border border-emerald-400/30">
                 <Shield className="w-6 h-6 text-white" />
               </div>
-              <div>
+              <div className="hidden sm:block">
                 <div className="flex items-center space-x-2">
                   <span className="font-black text-lg tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-white bg-clip-text text-transparent">
                     CIVICSHIELD NG
@@ -144,7 +144,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onViewChange, onOpe
             </div>
 
             {/* Navigation Mode Switcher: Citizen Portal vs Command Centre */}
-            <nav className="flex items-center bg-slate-900/90 p-1 rounded-xl border border-slate-800" aria-label="Experience switcher">
+            <nav className="flex items-center bg-slate-900/90 p-1 rounded-xl border border-slate-800 flex-shrink-0" aria-label="Experience switcher">
               <button
                 onClick={() => onViewChange('citizen')}
                 className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
@@ -155,7 +155,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onViewChange, onOpe
                 aria-current={currentView === 'citizen' ? 'page' : undefined}
               >
                 <Shield className="w-4 h-4" />
-                <span>{t('citizen_portal', 'Citizen Portal')}</span>
+                <span className="hidden md:inline">{t('citizen_portal', 'Citizen Portal')}</span>
               </button>
 
               <button
@@ -174,7 +174,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onViewChange, onOpe
                 aria-current={currentView === 'command' ? 'page' : undefined}
               >
                 <BarChart3 className="w-4 h-4" />
-                <span>{t('command_centre', 'Command Centre')}</span>
+                <span className="hidden md:inline">{t('command_centre', 'Command Centre')}</span>
                 {isInstitutionalUser && (
                   <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" title="Active Officer Access"></span>
                 )}
@@ -215,7 +215,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onViewChange, onOpe
                   aria-label="Open authentication modal"
                 >
                   <User className="w-4 h-4" />
-                  <span>{t('officer_sign_in', 'Officer / Sign In')}</span>
+                  <span className="hidden sm:inline">{t('officer_sign_in', 'Officer / Sign In')}</span>
                 </button>
               )}
             </div>

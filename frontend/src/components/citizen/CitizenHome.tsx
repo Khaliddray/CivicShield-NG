@@ -470,14 +470,14 @@ export const CitizenHome: React.FC = () => {
       </div>
 
       {/* Primary Feature Tabs */}
-      <nav aria-label="Feature sections" className="flex border-b border-slate-800 gap-2 overflow-x-auto pb-1" role="tablist">
+      <nav aria-label="Feature sections" className="flex w-full max-w-full border-b border-slate-800 gap-2 overflow-x-auto pb-1" role="tablist">
         <button
           role="tab"
           id="tab-btn-report"
           aria-selected={activeTab === 'report'}
           aria-controls="panel-report"
           onClick={() => setActiveTab('report')}
-          className={`flex items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
+          className={`flex flex-shrink-0 items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
             activeTab === 'report'
               ? 'border-emerald-500 text-emerald-400 bg-emerald-950/40 shadow-sm'
               : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900'
@@ -493,7 +493,7 @@ export const CitizenHome: React.FC = () => {
           aria-selected={activeTab === 'track'}
           aria-controls="panel-track"
           onClick={() => setActiveTab('track')}
-          className={`flex items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
+          className={`flex flex-shrink-0 items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
             activeTab === 'track'
               ? 'border-emerald-500 text-emerald-400 bg-emerald-950/40 shadow-sm'
               : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900'
@@ -512,7 +512,7 @@ export const CitizenHome: React.FC = () => {
             setActiveTab('registry');
             if (registryResults.length === 0) handleRegistrySearch();
           }}
-          className={`flex items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
+          className={`flex flex-shrink-0 items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
             activeTab === 'registry'
               ? 'border-emerald-500 text-emerald-400 bg-emerald-950/40 shadow-sm'
               : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900'
@@ -528,7 +528,7 @@ export const CitizenHome: React.FC = () => {
           aria-selected={activeTab === 'assistant'}
           aria-controls="panel-assistant"
           onClick={() => setActiveTab('assistant')}
-          className={`flex items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
+          className={`flex flex-shrink-0 items-center space-x-2 px-4 py-3 rounded-xl text-xs sm:text-sm font-bold transition-all border-b-2 whitespace-nowrap ${
             activeTab === 'assistant'
               ? 'border-emerald-500 text-emerald-400 bg-emerald-950/40 shadow-sm'
               : 'border-transparent text-slate-400 hover:text-white hover:bg-slate-900'
